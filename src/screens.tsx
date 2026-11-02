@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import {
   BUTTON_COLORS, errorText, tr,
   type Backend, type BackupFile, type BreakEntry, type CallEntry, type Category, type NetMode,
-  type Person, type Release, type RestoreReport, type ServerStatus, type Settings, type TtsEngineChoice,
+  type FoundServer, type Person, type Release, type RestoreReport, type ServerStatus, type Settings, type TtsEngineChoice,
   type TtsStatus, type UpdateProgress, ENGINE_LABEL, vivid,
 } from "./api";
 
@@ -424,7 +424,8 @@ function BackupSection({ api, toast, onChanged }: { api: Backend; toast: Toast; 
 function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; settings: Settings; toast: Toast; onChanged: () => void }) {
   const [mode, setMode] = useState<NetMode>(settings.netMode);
   const [ip, setIp] = useState(settings.netServerIp);
-  const [port, setPort] = useState(String(settings.netPort));
+  const [found, setFound] = useState<FoundServer[] | null>(null);
+  const [finding, setFinding] = useState(false);
   const [pc, setPc] = useState(settings.pcName);
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
@@ -443,7 +444,6 @@ function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; set
     try {
       await api.setSetting("net_mode", mode);
       await api.setSetting("net_server_ip", ip.trim());
-      await api.setSetting("net_port", port.trim());
       await api.setSetting("pc_name", pc.trim());
       onChanged();
       toast("Ağ ayarları kaydedildi");
@@ -451,9 +451,28 @@ function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; set
   };
   const runTest = async () => {
     setTesting(true); setTest(null);
-    try { setTest({ ok: true, text: await api.testConnection(ip, +port) }); }
+    try { setTest({ ok: true, text: await api.testConnection(ip, settings.netPort) }); }
     catch (e) { setTest({ ok: false, text: errorText(e) }); }
     finally { setTesting(false); }
+  };
+
+  // Finds the server by itself: no IP or port to type.
+  const find = async () => {
+    setFinding(true); setFound(null); setTest(null);
+    try {
+      const list = await api.findServers();
+      setFound(list);
+      if (list.length === 1) await pick(list[0]);
+    } catch (e) { toast(errorText(e), true); } finally { setFinding(false); }
+  };
+  const pick = async (f: FoundServer) => {
+    try {
+      await api.setSetting("net_mode", "istemci");
+      await api.useServer(f.ip, f.port);
+      setIp(f.ip);
+      onChanged();
+      setTest({ ok: true, text: `Sunucu bulundu ve kaydedildi: ${f.name} (${f.ip})` });
+    } catch (e) { toast(errorText(e), true); }
   };
 
   const modes: [NetMode, string, string][] = [
@@ -473,19 +492,29 @@ function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; set
       <div className="row">
         <Field label="Bu bilgisayarın adı (geçmişte görünür)"><input className="input" value={pc} maxLength={30} onChange={(e) => setPc(e.target.value)} /></Field>
         {mode === "istemci" && (
-          <Field label="Sunucu IP adresi"><input className="input" placeholder="192.168.1.20" value={ip} onChange={(e) => setIp(e.target.value)} /></Field>
-        )}
-        {mode !== "yerel" && (
-          <Field label="Port"><input className="input narrow" inputMode="numeric" value={port} onChange={(e) => setPort(e.target.value.replace(/\D/g, ""))} /></Field>
+          <Field label="Sunucu (otomatik bulunur; elle de yazılabilir)">
+            <input className="input" placeholder="Sunucuyu bul'a basın" value={ip} onChange={(e) => setIp(e.target.value)} />
+          </Field>
         )}
       </div>
+      {mode === "istemci" && (
+        <div className="row">
+          <button className="btn primary" disabled={finding} onClick={find}>{finding ? "Aranıyor…" : "Sunucuyu bul"}</button>
+          {found && found.length === 0 && (
+            <span className="result err">Ağda FABE sunucusu bulunamadı. Sunucu bilgisayarda uygulama açık ve "Sunucu" modunda mı?</span>
+          )}
+          {found && found.length > 1 && found.map((f) => (
+            <button key={f.ip + f.port} className={`btn ${f.ip === ip ? "on" : ""}`} onClick={() => pick(f)}>{f.name} · {f.ip}</button>
+          ))}
+        </div>
+      )}
       {mode === "sunucu" && ips.length > 0 && (
-        <p>İstemcilerde sunucu IP adresi olarak şunu yazın: <b className="mono">{ips.join(", ")}</b></p>
+        <p>Bu bilgisayarın adresi: <b className="mono">{ips.join(", ")}</b>. İstemciler sunucuyu "Sunucuyu bul" ile kendileri bulur; port otomatik seçilir.</p>
       )}
       {settings.netMode === "sunucu" && status && (
         <div className="server-status">
           {status.listening ? (
-            <span className="result">● Sunucu çalışıyor, {status.port} portunu dinliyor</span>
+            <span className="result">● Sunucu çalışıyor (port {status.port}, otomatik seçildi)</span>
           ) : (
             <span className="result err">● Sunucu çalışmıyor{status.error ? `: ${status.error}` : ""}</span>
           )}
@@ -505,8 +534,9 @@ function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; set
       </div>
       <p className="dim">
         İstemci modunda butonlara basınca anons sunucuya gider ve sunucunun hoparlöründen çalar. Sunucuda o ses yoksa
-        dosya otomatik gönderilir, yani her bilgisayar kendi kişi listesini ve kayıtlarını kullanabilir. Sunucu ilk açıldığında
-        Windows güvenlik duvarı izin isterse "İzin ver"e basın.
+        dosya otomatik gönderilir, yani her bilgisayar kendi kişi listesini ve kayıtlarını kullanabilir. Sunucunun adresi
+        değişirse istemci onu kendiliğinden yeniden bulur. Sunucu ve istemciler ilk açıldığında Windows güvenlik duvarı
+        izin isterse "İzin ver"e basın.
       </p>
     </div>
   );

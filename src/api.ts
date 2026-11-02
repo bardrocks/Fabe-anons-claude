@@ -65,6 +65,7 @@ export interface RestoreReport {
 }
 export interface BackupFile { path: string; name: string; created: string; size: number; }
 export interface ServerStatus { listening: boolean; port: number; error: string | null; clients: { name: string; ip: string; lastSeen: string }[]; }
+export interface FoundServer { name: string; ip: string; port: number; version: string; }
 export interface Release { version: string; notes: string; url: string; sha256: string; }
 export interface UpdateProgress { step: string; done: number; total: number; }
 export interface PersonInput { name: string; category: string; color: string | null; soundFile: string | null; }
@@ -116,6 +117,9 @@ export interface Backend {
   // Network
   testConnection(ip: string, port: number): Promise<string>;
   localIps(): Promise<string[]>;
+  /** FABE servers found on the local network (no IP or port typing needed). */
+  findServers(): Promise<FoundServer[]>;
+  useServer(ip: string, port: number): Promise<void>;
   netStatus(): Promise<ServerStatus | null>;
   // Updates
   checkUpdate(): Promise<Release | null>;
@@ -183,6 +187,8 @@ async function tauriBackend(): Promise<Backend> {
     showInFolder: (path) => revealItemInDir(path),
     testConnection: (ip, port) => invoke("test_connection", { ip, port }),
     localIps: () => invoke("local_ips"),
+    findServers: () => invoke("find_servers"),
+    useServer: (ip, port) => invoke("use_server", { ip, port }),
     netStatus: () => invoke("net_status"),
     checkUpdate: () => invoke("check_update"),
     installUpdate: (release) => invoke("install_update", { release }),
@@ -201,7 +207,7 @@ function mockBackend(): Backend {
   let categories: Category[] = ["Personeller", "Firmalar", "Depo"].map((name, i) => ({ id: i + 1, name, position: i + 1 }));
   let breaks: BreakEntry[] = [{ id: 1, time: "12:30", soundFile: "ogle-molasi.mp3", label: "Öğle molası" }, { id: 2, time: "19:12", soundFile: "mola1.mp3", label: "Mola" }];
   const history: CallEntry[] = [];
-  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.2.0" };
+  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.2.1" };
   const playerCbs = new Set<(s: PlayerState) => void>();
   const dataCbs = new Set<() => void>();
   const changed = () => dataCbs.forEach((cb) => cb());
@@ -324,6 +330,8 @@ function mockBackend(): Backend {
     async showInFolder() {},
     async testConnection(ip) { if (!ip) throw "Önce sunucunun IP adresini yazın"; return "Bağlantı başarılı (4 ms)"; },
     async localIps() { return ["192.168.1.20"]; },
+    async findServers() { await new Promise((r) => setTimeout(r, 600)); return [{ name: "KASA-ANA", ip: "192.168.1.20", port: 55555, version: "4.2.1" }]; },
+    async useServer(ip, port) { settings.netServerIp = ip; settings.netPort = port; },
     async netStatus() { return settings.netMode === "sunucu" ? { listening: true, port: settings.netPort, error: null, clients: [{ name: "KASA-1", ip: "192.168.1.31", lastSeen: "14:05" }] } : null; },
     async checkUpdate() { return { version: "4.3.0", notes: "Canlı anons motoru eklendi.", url: "", sha256: "" }; },
     async installUpdate() { throw "Tarayıcı önizlemesinde güncelleme yapılamaz"; },
