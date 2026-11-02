@@ -42,10 +42,9 @@ Windows kurulum dosyası her gönderimde GitHub Actions ile derlenir (Actions > 
 
 ## Yeni sürüm yayınlama (otomatik güncelleme)
 
-1. `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` ve `package.json` içindeki sürümü artırın (ör. 4.1.0).
-2. `git tag -a v4.1.0 -m "Bu sürümde neler var"` ve `git push origin v4.1.0`.
-3. GitHub Actions kurulum dosyasını derler, bir GitHub sürümü açar ve `latest.json` yayınlar.
+1. `src-tauri/Cargo.toml`, `src-tauri/tauri.conf.json` ve `package.json` içindeki sürümü artırın (ör. 4.1.0)
+   ve `SURUM_NOTLARI.md` dosyasına bu sürümde neler olduğunu yazın.
+2. Değişikliği ana dala (main) birleştirin.
+3. GitHub Actions kurulum dosyasını derler, `v4.1.0` adında bir GitHub sürümü açar ve `latest.json` yayınlar.
    Uygulamalar açılışta bunu görür ve "Yeni sürüm var" butonu çıkar. Butona basılınca önce tüm veriler
    `%APPDATA%\FABE Anons\yedekler` klasörüne yedeklenir, sonra yeni sürüm kurulur ve uygulama yeniden açılır.
-
-Güncellemelerin indirilebilmesi için sürümlerin herkese açık olması gerekir.
