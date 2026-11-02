@@ -236,9 +236,15 @@ function CategoryManager({ api, categories, people, toast }: { api: Backend; cat
 export function PeopleScreen({ api, categories, people, toast }: { api: Backend; categories: Category[]; people: Person[]; toast: Toast }) {
   const [draft, setDraft] = useState<PersonDraft | null>(null);
   const [q, setQ] = useState("");
+  const [picked, setCat] = useState<string | null>(null);
+  const cat = picked !== null && categories.some((c) => c.name === picked) ? picked : null; // category may have been deleted
   const sorted = useMemo(() => [...people].sort((a, b) => tr.sort(a.name, b.name)), [people]);
   const needle = tr.lower(q.trim());
-  const list = sorted.filter((p) => !needle || tr.lower(p.name).includes(needle) || tr.lower(p.category).includes(needle));
+  const list = sorted.filter((p) => (cat === null || p.category === cat) && (!needle || tr.lower(p.name).includes(needle) || tr.lower(p.category).includes(needle)));
+  const filters: [string | null, string, number][] = [
+    [null, "Tümü", people.length],
+    ...categories.map((c): [string, string, number] => [c.name, c.name, people.filter((p) => p.category === c.name).length]),
+  ];
   const fail = (e: unknown) => toast(errorText(e), true);
 
   const save = async () => {
@@ -305,8 +311,13 @@ export function PeopleScreen({ api, categories, people, toast }: { api: Backend;
 
       <div className="group">
         <div className="row spread">
-          <h3>Anons butonları ({people.length})</h3>
+          <h3>Anons butonları ({list.length === people.length ? people.length : `${list.length} / ${people.length}`})</h3>
           <input className="input" placeholder="Ara…" value={q} onChange={(e) => setQ(e.target.value)} />
+        </div>
+        <div className="tabs" role="tablist" aria-label="Kategoriye göre süz">
+          {filters.map(([k, l, n]) => (
+            <button key={k ?? "*"} className="tab" role="tab" aria-selected={cat === k} onClick={() => setCat(k)}>{tr.upper(l)}<span>{n}</span></button>
+          ))}
         </div>
         <table className="table">
           <thead><tr><th>İsim</th><th>Kategori</th><th>Ses</th><th>Çağrı</th><th /></tr></thead>

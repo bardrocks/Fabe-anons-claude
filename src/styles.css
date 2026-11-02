@@ -268,3 +268,4 @@ input[type=time].input { color-scheme: dark; font-family: var(--f-mono); font-si
 .name-btn:hover { color: var(--led); }
 .name-btn:focus-visible { outline: 2px solid var(--led); outline-offset: 2px; border-radius: 4px; }
 .btn.small.on { border-color: var(--led); color: var(--led); }
+.group > .tabs { margin-left: 0; justify-content: flex-start; }
