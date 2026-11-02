@@ -252,6 +252,9 @@ impl Tts {
         if text.is_empty() {
             bail!("Okunacak metni yazın");
         }
+        // Text typed with Caps Lock would otherwise be spelled letter by letter (both engines).
+        // Turkish rule: I -> ı, İ -> i.
+        let text = &text.replace('I', "ı").replace('İ', "i").to_lowercase();
         let n = self.next.fetch_add(1, Ordering::Relaxed);
         let file = self.temp.join(format!("anons-{}-{n}.wav", std::process::id()));
         let rate = rate.clamp(0.5, 2.0);
@@ -544,6 +547,24 @@ done"#,
         let s = t.speak("Deneme", 1.0, Preference::Piper).unwrap();
         assert_eq!(s.engine, Engine::Piper);
         assert!(s.note.is_none());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn capitals_are_lowered_the_turkish_way() {
+        let dir = tmp("caps");
+        std::fs::create_dir_all(dir.join("tmp")).unwrap();
+        // A stand-in Piper that saves the text it was given.
+        let piper = dir.join("piper.sh");
+        std::fs::write(&piper, "#!/bin/sh\nwhile [ $# -gt 0 ]; do [ \"$1\" = --output_file ] && out=$2; shift; done\ncat > \"$out\"\n").unwrap();
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&piper, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let t = tts_with(&dir, None, Some(PiperCmd { exe: piper, voice: dir.join("tr.onnx") }));
+        let s = t.speak("IŞIL HANIM İRSALİYE İÇİN KASAYA", 1.0, Preference::Auto).unwrap();
+        assert_eq!(std::fs::read_to_string(&s.file).unwrap().trim(), "ışıl hanım irsaliye için kasaya");
         std::fs::remove_dir_all(&dir).ok();
     }
 
