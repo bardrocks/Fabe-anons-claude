@@ -36,3 +36,8 @@ pub fn legacy_dir() -> PathBuf {
 pub fn ensure() -> std::io::Result<()> {
     std::fs::create_dir_all(sounds_dir())
 }
+
+/// Automatic backups (before restoring or updating).
+pub fn backups_dir() -> PathBuf {
+    data_dir().join("yedekler")
+}

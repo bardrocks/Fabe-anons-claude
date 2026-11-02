@@ -1,6 +1,6 @@
 [package]
 name = "fabe-anons-v4"
-version = "0.1.0"
+version = "4.0.0"
 description = "FABE Anons - mağaza anons sistemi"
 authors = ["bardrocks"]
 edition = "2024"
@@ -24,7 +24,8 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 rodio = { version = "0.20", default-features = false, features = ["symphonia-all"] }
-rusqlite = { version = "0.32", features = ["bundled"] }
+rusqlite = { version = "0.32", features = ["bundled", "backup"] }
+ureq = { version = "2", features = ["json"] }
 crossbeam-channel = "0.5"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 anyhow = "1"

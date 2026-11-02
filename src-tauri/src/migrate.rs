@@ -101,6 +101,21 @@ pub fn import(legacy: &Path, store: &Store, sounds: &Path) -> Result<Report> {
                 store.set_setting(new, &x.to_string())?;
             }
         }
+        // Network: "Yerel" / "Sunucu" / "İstemci", server IP and port.
+        if let Some(mode) = v.get("calisma_modu").and_then(Value::as_str) {
+            let mode = match mode.to_lowercase().as_str() {
+                m if m.starts_with("sun") => "sunucu",
+                m if m.contains("stemci") => "istemci",
+                _ => "yerel",
+            };
+            store.set_setting("net_mode", mode)?;
+        }
+        if let Some(ip) = v.get("sunucu_ip").and_then(Value::as_str) {
+            store.set_setting("net_server_ip", ip.trim())?;
+        }
+        if let Some(port) = v.get("port").and_then(Value::as_u64) {
+            store.set_setting("net_port", &port.to_string())?;
+        }
     }
 
     store.set_setting("migrated_from_v3", &chrono::Local::now().to_rfc3339())?;

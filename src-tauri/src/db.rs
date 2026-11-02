@@ -81,7 +81,9 @@ CREATE TABLE IF NOT EXISTS categories (
     name     TEXT NOT NULL UNIQUE COLLATE NOCASE,
     position INTEGER NOT NULL
 );
-INSERT OR IGNORE INTO categories(name, position) VALUES ('Personeller', 1), ('Firmalar', 2);
+-- Default categories only on a fresh database, so deleted/renamed ones don't come back.
+INSERT INTO categories(name, position)
+  SELECT * FROM (VALUES ('Personeller', 1), ('Firmalar', 2)) WHERE NOT EXISTS (SELECT 1 FROM categories);
 CREATE TABLE IF NOT EXISTS settings (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -162,6 +164,145 @@ impl Store {
         let mut st = c.prepare("SELECT id, name, position FROM categories ORDER BY position, id")?;
         let rows = st.query_map([], |r| Ok(Category { id: r.get(0)?, name: r.get(1)?, position: r.get(2)? }))?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    pub fn rename_category(&self, id: i64, new_name: &str) -> Result<()> {
+        let new_name = new_name.trim();
+        anyhow::ensure!(!new_name.is_empty(), "Kategori adı boş olamaz");
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        let old: String = tx.query_row("SELECT name FROM categories WHERE id=?1", [id], |r| r.get(0))?;
+        let taken: i64 = tx.query_row(
+            "SELECT COUNT(*) FROM categories WHERE name=?1 AND id<>?2",
+            params![new_name, id],
+            |r| r.get(0),
+        )?;
+        anyhow::ensure!(taken == 0, "\"{new_name}\" adında bir kategori zaten var");
+        tx.execute("UPDATE categories SET name=?1 WHERE id=?2", params![new_name, id])?;
+        tx.execute("UPDATE people SET category=?1 WHERE category=?2 COLLATE NOCASE", params![new_name, old])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Deletes a category; its people move to the first remaining category.
+    /// Returns how many people were moved and where.
+    pub fn delete_category(&self, id: i64) -> Result<(usize, String)> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        let n: i64 = tx.query_row("SELECT COUNT(*) FROM categories", [], |r| r.get(0))?;
+        anyhow::ensure!(n > 1, "Son kategori silinemez");
+        let old: String = tx.query_row("SELECT name FROM categories WHERE id=?1", [id], |r| r.get(0))?;
+        tx.execute("DELETE FROM categories WHERE id=?1", [id])?;
+        let target: String =
+            tx.query_row("SELECT name FROM categories ORDER BY position, id LIMIT 1", [], |r| r.get(0))?;
+        let moved = tx.execute("UPDATE people SET category=?1 WHERE category=?2 COLLATE NOCASE", params![target, old])?;
+        tx.commit()?;
+        Ok((moved, target))
+    }
+
+    /// Moves a category one step left (-1) or right (+1) in the tab order.
+    pub fn move_category(&self, id: i64, step: i64) -> Result<()> {
+        let cats = self.categories()?;
+        let Some(i) = cats.iter().position(|c| c.id == id) else { anyhow::bail!("Kategori bulunamadı") };
+        let j = i as i64 + step.signum();
+        if j < 0 || j as usize >= cats.len() {
+            return Ok(());
+        }
+        let mut order: Vec<i64> = cats.iter().map(|c| c.id).collect();
+        order.swap(i, j as usize);
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        for (pos, cid) in order.iter().enumerate() {
+            tx.execute("UPDATE categories SET position=?1 WHERE id=?2", params![pos as i64 + 1, cid])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Edits a person's button. `sound_file` None keeps the current sound.
+    pub fn update_person(
+        &self,
+        id: i64,
+        name: &str,
+        category: &str,
+        color: Option<&str>,
+        sound_file: Option<&str>,
+    ) -> Result<()> {
+        let name = name.trim();
+        anyhow::ensure!(!name.is_empty(), "İsim boş olamaz");
+        let cat = self.add_category(category)?;
+        let c = self.c();
+        let taken: i64 =
+            c.query_row("SELECT COUNT(*) FROM people WHERE name=?1 AND id<>?2", params![name, id], |r| r.get(0))?;
+        anyhow::ensure!(taken == 0, "\"{name}\" adında biri zaten var");
+        c.execute(
+            "UPDATE people SET name=?1, category=?2, color=?3, sound_file=COALESCE(?4, sound_file) WHERE id=?5",
+            params![name, cat.name, color, sound_file, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn create_person(&self, name: &str, category: &str, color: Option<&str>, sound_file: &str) -> Result<i64> {
+        let name = name.trim();
+        anyhow::ensure!(!name.is_empty(), "İsim boş olamaz");
+        let exists: i64 = self.c().query_row("SELECT COUNT(*) FROM people WHERE name=?1", [name], |r| r.get(0))?;
+        anyhow::ensure!(exists == 0, "\"{name}\" adında biri zaten var");
+        self.add_person(name, category, color, Some(sound_file), 0)
+    }
+
+    /// Deletes a person. Their past announcements stay in the history.
+    pub fn delete_person(&self, id: i64) -> Result<Option<String>> {
+        let c = self.c();
+        let sound: Option<String> =
+            c.query_row("SELECT sound_file FROM people WHERE id=?1", [id], |r| r.get(0)).optional()?.flatten();
+        c.execute("UPDATE calls SET person_id=NULL WHERE person_id=?1", [id])?;
+        c.execute("DELETE FROM people WHERE id=?1", [id])?;
+        Ok(sound)
+    }
+
+    /// True if a sound file is still used by a person or a break (so it must not be deleted).
+    pub fn sound_in_use(&self, file: &str) -> Result<bool> {
+        let n: i64 = self.c().query_row(
+            "SELECT (SELECT COUNT(*) FROM people WHERE sound_file=?1) + (SELECT COUNT(*) FROM breaks WHERE sound_file=?1)",
+            [file],
+            |r| r.get(0),
+        )?;
+        Ok(n > 0)
+    }
+
+    pub fn update_break(&self, id: i64, time: &str, sound_file: Option<&str>, label: &str) -> Result<()> {
+        self.c().execute(
+            "UPDATE breaks SET time=?1, sound_file=COALESCE(?2, sound_file), label=?3 WHERE id=?4",
+            params![time, sound_file, label, id],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_break(&self, id: i64) -> Result<Option<String>> {
+        let c = self.c();
+        let sound: Option<String> =
+            c.query_row("SELECT sound_file FROM breaks WHERE id=?1", [id], |r| r.get(0)).optional()?;
+        c.execute("DELETE FROM breaks WHERE id=?1", [id])?;
+        Ok(sound)
+    }
+
+    /// Writes a consistent copy of the whole database to `dest`.
+    pub fn backup_to(&self, dest: &Path) -> Result<()> {
+        let _ = std::fs::remove_file(dest);
+        self.c().backup(rusqlite::DatabaseName::Main, dest, None)?;
+        Ok(())
+    }
+
+    /// Replaces the whole database with the one in `src` (restore from backup).
+    pub fn restore_from(&self, src: &Path) -> Result<()> {
+        // Make sure it really is a FABE database before touching ours.
+        let check = Connection::open_with_flags(src, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+        check.query_row("SELECT COUNT(*) FROM people", [], |r| r.get::<_, i64>(0))?;
+        drop(check);
+        let mut c = self.c();
+        c.restore(rusqlite::DatabaseName::Main, src, None::<fn(rusqlite::backup::Progress)>)?;
+        c.execute_batch(SCHEMA)?; // adds tables a newer version expects
+        Ok(())
     }
 
     pub fn people(&self) -> Result<Vec<Person>> {

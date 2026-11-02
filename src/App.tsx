@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { backendReady, errorText, tr, type Backend, type Category, type Person, type PlayerState, type Snapshot } from "./api";
+import { backendReady, errorText, tr, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Snapshot } from "./api";
 import { BreaksScreen, HistoryScreen, PeopleScreen, SettingsScreen } from "./screens";
 
 type Page = "anons" | "mola" | "gecmis" | "kisiler" | "ayarlar";
@@ -42,6 +42,7 @@ export default function App() {
   const [data, setData] = useState<Snapshot | null>(null);
   const [player, setPlayer] = useState<PlayerState>(IDLE);
   const [page, setPage] = useState<Page>("anons");
+  const [release, setRelease] = useState<Release | null>(null);
   const [toast, showToast] = useToast();
   const now = useClock();
 
@@ -57,6 +58,8 @@ export default function App() {
       setApi(b);
       refresh(b);
       offs = [b.onPlayer(setPlayer), b.onDataChanged(() => refresh(b))];
+      // Quietly look for a new version a few seconds after start; no network is fine.
+      window.setTimeout(() => b.checkUpdate().then((r) => !dead && setRelease(r), () => {}), 4000);
     });
     return () => { dead = true; offs.forEach((f) => f()); };
   }, [refresh]);
@@ -90,24 +93,24 @@ export default function App() {
 
   return (
     <div className={`rack ${page === "anons" ? "" : "page"}`}>
-      <Nav page={page} setPage={setPage} />
+      <Nav page={page} setPage={setPage} mode={data?.settings.netMode ?? "yerel"} release={release} />
       {!api || !data ? (
         <section className="screen plate"><p>Yükleniyor…</p></section>
       ) : page === "anons" ? (
         <>
-          <Master player={player} clock={clock} nextBreak={nextBreak} onStop={stop} />
+          <Master player={player} clock={clock} nextBreak={nextBreak} onStop={stop} mode={data.settings.netMode} />
           <Mic api={api} data={data} toast={showToast} onSaved={() => refresh(api)} />
           <Deck api={api} categories={data.categories} people={data.people} player={player} toast={showToast} />
           <Side data={data} />
         </>
       ) : page === "mola" ? (
-        <BreaksScreen breaks={data.breaks} />
+        <BreaksScreen api={api} breaks={data.breaks} toast={showToast} />
       ) : page === "gecmis" ? (
         <HistoryScreen history={data.history} />
       ) : page === "kisiler" ? (
         <PeopleScreen api={api} categories={data.categories} people={data.people} toast={showToast} />
       ) : (
-        <SettingsScreen api={api} settings={data.settings} toast={showToast} onChanged={() => refresh(api)} />
+        <SettingsScreen api={api} settings={data.settings} release={release} onRelease={setRelease} toast={showToast} onChanged={() => refresh(api)} />
       )}
       <div className={`toast ${toast ? "show" : ""} ${toast?.err ? "err" : ""}`} role="status">{toast?.text}</div>
     </div>
@@ -122,7 +125,9 @@ const NAV: { id: Page; label: string; icon: string }[] = [
   { id: "ayarlar", label: "Ayarlar", icon: "M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6" },
 ];
 
-function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
+const MODE_LABEL: Record<NetMode, string> = { yerel: "YEREL", sunucu: "SUNUCU", istemci: "İSTEMCİ" };
+
+function Nav({ page, setPage, mode, release }: { page: Page; setPage: (p: Page) => void; mode: NetMode; release: Release | null }) {
   return (
     <nav className="nav plate" aria-label="Bölümler">
       <div className="logo" aria-hidden="true">FABE</div>
@@ -135,13 +140,19 @@ function Nav({ page, setPage }: { page: Page; setPage: (p: Page) => void }) {
           </button>
         ))}
       </div>
-      <div className="net"><i />TEK<br />BİLGİSAYAR</div>
+      {release && (
+        <button className="navkey update" onClick={() => setPage("ayarlar")} title={`Yeni sürüm ${release.version} var`}>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round"><path d="M12 3v12M7 10l5 5 5-5M5 21h14" /></svg>
+          {release.version}
+        </button>
+      )}
+      <div className="net"><i />{MODE_LABEL[mode]}</div>
     </nav>
   );
 }
 
-function Master({ player, clock, nextBreak, onStop }: {
-  player: PlayerState; clock: string; nextBreak: { time: string; left: string } | null; onStop: () => void;
+function Master({ player, clock, nextBreak, onStop, mode }: {
+  player: PlayerState; clock: string; nextBreak: { time: string; left: string } | null; onStop: () => void; mode: NetMode;
 }) {
   const cur = player.current;
   const total = cur ? player.durationMs * cur.reps : 0;
@@ -158,7 +169,7 @@ function Master({ player, clock, nextBreak, onStop }: {
           <span className={`lamp ${cur ? "on" : ""}`}>{cur ? "YAYINDA" : "BEKLEMEDE"}</span>
           <span>
             {nextBreak && <>MOLA {nextBreak.time} · {nextBreak.left} &nbsp;·&nbsp; </>}
-            <span className="ok">●</span> TEK BİLGİSAYAR &nbsp;·&nbsp; {clock}
+            <span className="ok">●</span> {MODE_LABEL[mode]} &nbsp;·&nbsp; {clock}
           </span>
         </div>
         <div className="now">{cur ? tr.upper(cur.kind === "tts" ? "Canlı anons" : cur.title) : "HAZIR"}</div>

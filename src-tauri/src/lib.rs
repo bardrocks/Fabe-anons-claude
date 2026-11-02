@@ -1,10 +1,13 @@
 //! FABE Anons v4 - Tauri back end.
 
+mod backup;
 mod db;
 mod ducking;
 mod migrate;
 mod paths;
 mod player;
+mod sounds;
+mod update;
 
 use db::{BreakEntry, CallEntry, Category, Person, Store};
 use player::{Item, Kind, Player};
@@ -18,6 +21,12 @@ use tauri::{Emitter, Manager, State};
 const LOCAL_SOURCE: &str = "Bu bilgisayar";
 /// Names are always read twice.
 const NAME_REPS: u32 = 2;
+/// Same port as the old app, so old clients can still find the server.
+const DEFAULT_PORT: u16 = 55555;
+
+fn default_pc_name() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "Bu bilgisayar".into())
+}
 
 pub struct App {
     store: Store,
@@ -33,6 +42,12 @@ struct Settings {
     tts_gain: f32,
     tts_rate: f32,
     chime: bool,
+    /// "yerel" | "sunucu" | "istemci"
+    net_mode: String,
+    net_server_ip: String,
+    net_port: u16,
+    pc_name: String,
+    version: String,
 }
 
 impl Settings {
@@ -42,6 +57,11 @@ impl Settings {
             tts_gain: s.setting_f32("tts_gain", 4.0),
             tts_rate: s.setting_f32("tts_rate", 1.0),
             chime: s.setting("chime").ok().flatten().map(|v| v != "0" && v != "false").unwrap_or(true),
+            net_mode: s.setting("net_mode").ok().flatten().unwrap_or_else(|| "yerel".into()),
+            net_server_ip: s.setting("net_server_ip").ok().flatten().unwrap_or_default(),
+            net_port: s.setting("net_port").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_PORT),
+            pc_name: s.setting("pc_name").ok().flatten().unwrap_or_else(default_pc_name),
+            version: env!("CARGO_PKG_VERSION").into(),
         }
     }
 }
@@ -121,6 +141,270 @@ fn import_old_backup(path: String, app: AppState, handle: tauri::AppHandle) -> R
     Ok(rep)
 }
 
+fn changed(handle: &tauri::AppHandle) {
+    let _ = handle.emit("data-changed", ());
+}
+
+fn opt(s: Option<String>) -> Option<String> {
+    s.map(|v| v.trim().to_string()).filter(|v| !v.is_empty())
+}
+
+/// Copies a sound the user picked into the app's sesler folder. Returns the stored file name.
+#[tauri::command]
+fn import_sound(path: String, name_hint: String) -> Result<String, String> {
+    sounds::import(std::path::Path::new(&path), &paths::sounds_dir(), &name_hint).map_err(err)
+}
+
+/// Plays a sound once to try it ("Dinle"), without logging it.
+#[tauri::command]
+fn preview_sound(file: String, app: AppState) -> Result<(), String> {
+    let path = paths::sounds_dir().join(&file);
+    if !path.is_file() {
+        return Err("Ses dosyası bulunamadı".into());
+    }
+    app.player.enqueue(Item {
+        id: app.player.next_id(),
+        title: "Deneme".into(),
+        kind: Kind::Break,
+        source: "Dinleme".into(),
+        file: path,
+        reps: 1,
+        gain: 1.0,
+        temp: false,
+    });
+    Ok(())
+}
+
+/// Deletes a sound file once nothing uses it any more.
+fn drop_sound_if_unused(store: &Store, file: Option<String>) {
+    if let Some(f) = file {
+        if !store.sound_in_use(&f).unwrap_or(true) {
+            let _ = std::fs::remove_file(paths::sounds_dir().join(f));
+        }
+    }
+}
+
+#[tauri::command]
+fn create_person(
+    name: String,
+    category: String,
+    color: Option<String>,
+    sound_file: String,
+    app: AppState,
+    handle: tauri::AppHandle,
+) -> Result<i64, String> {
+    let id = app.store.create_person(&name, &category, opt(color).as_deref(), &sound_file).map_err(err)?;
+    changed(&handle);
+    Ok(id)
+}
+
+#[tauri::command]
+fn update_person(
+    id: i64,
+    name: String,
+    category: String,
+    color: Option<String>,
+    sound_file: Option<String>,
+    app: AppState,
+    handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let old = app.store.person(id).map_err(err)?.and_then(|p| p.sound_file);
+    let new_sound = opt(sound_file);
+    app.store.update_person(id, &name, &category, opt(color).as_deref(), new_sound.as_deref()).map_err(err)?;
+    if new_sound.is_some() && new_sound != old {
+        drop_sound_if_unused(&app.store, old);
+    }
+    changed(&handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_person(id: i64, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+    let sound = app.store.delete_person(id).map_err(err)?;
+    drop_sound_if_unused(&app.store, sound);
+    changed(&handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn rename_category(id: i64, name: String, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+    app.store.rename_category(id, &name).map_err(err)?;
+    changed(&handle);
+    Ok(())
+}
+
+/// Returns a short message saying where the category's people went.
+#[tauri::command]
+fn delete_category(id: i64, app: AppState, handle: tauri::AppHandle) -> Result<String, String> {
+    let (moved, target) = app.store.delete_category(id).map_err(err)?;
+    changed(&handle);
+    Ok(if moved > 0 { format!("{moved} kişi \"{target}\" kategorisine taşındı") } else { String::new() })
+}
+
+#[tauri::command]
+fn move_category(id: i64, step: i64, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+    app.store.move_category(id, step).map_err(err)?;
+    changed(&handle);
+    Ok(())
+}
+
+fn valid_time(t: &str) -> Result<String, String> {
+    chrono::NaiveTime::parse_from_str(t.trim(), "%H:%M")
+        .map(|v| v.format("%H:%M").to_string())
+        .map_err(|_| "Saat SS:DD biçiminde olmalı, ör. 12:30".to_string())
+}
+
+#[tauri::command]
+fn create_break(time: String, label: String, sound_file: String, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+    app.store.add_break(&valid_time(&time)?, &sound_file, label.trim()).map_err(err)?;
+    changed(&handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn update_break(
+    id: i64,
+    time: String,
+    label: String,
+    sound_file: Option<String>,
+    app: AppState,
+    handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let old = app.store.breaks().map_err(err)?.into_iter().find(|b| b.id == id).map(|b| b.sound_file);
+    let new_sound = opt(sound_file);
+    app.store.update_break(id, &valid_time(&time)?, new_sound.as_deref(), label.trim()).map_err(err)?;
+    if new_sound.is_some() && new_sound != old {
+        drop_sound_if_unused(&app.store, old);
+    }
+    changed(&handle);
+    Ok(())
+}
+
+#[tauri::command]
+fn delete_break(id: i64, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+    let sound = app.store.delete_break(id).map_err(err)?;
+    drop_sound_if_unused(&app.store, sound);
+    changed(&handle);
+    Ok(())
+}
+
+/// "Tüm verileri yedekle"
+#[tauri::command]
+async fn create_backup(path: String, app: tauri::State<'_, Arc<App>>) -> Result<(), String> {
+    let app = app.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || backup::create(&app.store, &paths::sounds_dir(), std::path::Path::new(&path)))
+        .await
+        .map_err(err)?
+        .map_err(err)
+}
+
+/// "Yedekten geri yükle": accepts backups of this app and of the old app.
+#[tauri::command]
+async fn restore_backup(
+    path: String,
+    app: tauri::State<'_, Arc<App>>,
+    handle: tauri::AppHandle,
+) -> Result<backup::RestoreReport, String> {
+    let app = app.inner().clone();
+    let rep = tauri::async_runtime::spawn_blocking(move || {
+        backup::restore(std::path::Path::new(&path), &app.store, &paths::sounds_dir())
+    })
+    .await
+    .map_err(err)?
+    .map_err(err)?;
+    log::info!("Yedekten geri yüklendi ({}): {} kişi, {} ses, {} mola", rep.kind, rep.people, rep.sounds, rep.breaks);
+    changed(&handle);
+    Ok(rep)
+}
+
+#[tauri::command]
+fn list_backups() -> Result<Vec<backup::BackupFile>, String> {
+    backup::list().map_err(err)
+}
+
+#[tauri::command]
+fn open_backups_folder() -> Result<String, String> {
+    let dir = paths::backups_dir();
+    std::fs::create_dir_all(&dir).map_err(err)?;
+    Ok(dir.to_string_lossy().into())
+}
+
+/// "Bağlantıyı test et": can this PC reach the server?
+#[tauri::command]
+async fn test_connection(ip: String, port: u16) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        use std::net::ToSocketAddrs;
+        let ip = ip.trim().to_string();
+        if ip.is_empty() {
+            return Err("Önce sunucunun IP adresini yazın".to_string());
+        }
+        let addr = (ip.as_str(), port)
+            .to_socket_addrs()
+            .map_err(|_| format!("\"{ip}\" geçerli bir adres değil"))?
+            .next()
+            .ok_or("Adres çözülemedi")?;
+        let start = std::time::Instant::now();
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))
+            .map(|_| format!("Bağlantı başarılı ({} ms)", start.elapsed().as_millis()))
+            .map_err(|_| format!("{ip}:{port} adresine ulaşılamadı. Sunucu açık mı, aynı ağda mısınız, güvenlik duvarı izin veriyor mu?"))
+    })
+    .await
+    .map_err(err)?
+}
+
+/// Local IP addresses of this PC (shown on the network page so clients know what to type).
+#[tauri::command]
+fn local_ips() -> Vec<String> {
+    // Connecting a UDP socket sends nothing; it only asks the OS which interface it would use.
+    std::net::UdpSocket::bind("0.0.0.0:0")
+        .and_then(|s| s.connect("8.8.8.8:80").map(|_| s))
+        .and_then(|s| s.local_addr())
+        .map(|a| vec![a.ip().to_string()])
+        .unwrap_or_default()
+}
+
+#[tauri::command]
+async fn check_update() -> Result<Option<update::Release>, String> {
+    tauri::async_runtime::spawn_blocking(update::check).await.map_err(err)?.map_err(err)
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UpdateProgress {
+    step: String,
+    done: u64,
+    total: u64,
+}
+
+/// Full backup, download, verify, start the installer, quit.
+#[tauri::command]
+async fn install_update(
+    release: update::Release,
+    app: tauri::State<'_, Arc<App>>,
+    handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let app = app.inner().clone();
+    let h = handle.clone();
+    let installer = tauri::async_runtime::spawn_blocking(move || -> anyhow::Result<std::path::PathBuf> {
+        let say = |step: &str, done: u64, total: u64| {
+            let _ = h.emit("update-progress", UpdateProgress { step: step.into(), done, total });
+        };
+        say("Tüm veriler yedekleniyor…", 0, 0);
+        let b = backup::auto(&app.store, &paths::sounds_dir(), "guncelleme-oncesi")?;
+        log::info!("Güncelleme öncesi yedek: {}", b.display());
+        let path = update::download(&release, |d, t| say("Yeni sürüm indiriliyor…", d, t))?;
+        say("Kurulum başlatılıyor…", 0, 0);
+        update::launch_installer(&path)?;
+        Ok(path)
+    })
+    .await
+    .map_err(err)?
+    .map_err(|e| err(format!("{e:#}")))?;
+    log::info!("Güncelleme kuruluyor: {}", installer.display());
+    handle.exit(0);
+    Ok(())
+}
+
 #[tauri::command]
 fn stop_all(app: AppState) {
     app.player.stop();
@@ -136,6 +420,15 @@ fn set_setting(key: String, value: String, app: AppState) -> Result<(), String> 
         "chime" => app.player.set_chime(value != "0" && value != "false"),
         "tts_gain" | "tts_rate" => {
             value.parse::<f32>().map_err(err)?;
+        }
+        "net_mode" => {
+            if !["yerel", "sunucu", "istemci"].contains(&value.as_str()) {
+                return Err("Geçersiz çalışma modu".into());
+            }
+        }
+        "net_server_ip" | "pc_name" => {}
+        "net_port" => {
+            value.parse::<u16>().map_err(|_| "Port 1-65535 arasında bir sayı olmalı".to_string())?;
         }
         _ => return Err(format!("Bilinmeyen ayar: {key}")),
     }
@@ -245,7 +538,35 @@ pub fn run() {
             tauri_app.manage(app);
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![snapshot, add_category, set_person_category, call_person, speak, import_old_backup, stop_all, set_setting])
+        .invoke_handler(tauri::generate_handler![
+            snapshot,
+            add_category,
+            rename_category,
+            delete_category,
+            move_category,
+            set_person_category,
+            create_person,
+            update_person,
+            delete_person,
+            import_sound,
+            preview_sound,
+            create_break,
+            update_break,
+            delete_break,
+            call_person,
+            speak,
+            import_old_backup,
+            create_backup,
+            restore_backup,
+            list_backups,
+            open_backups_folder,
+            test_connection,
+            local_ips,
+            check_update,
+            install_update,
+            stop_all,
+            set_setting
+        ])
         .run(tauri::generate_context!())
         .expect("FABE Anons başlatılamadı");
 }
