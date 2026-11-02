@@ -342,8 +342,29 @@ export const tr = {
 /** Colors offered for buttons (old app's palette plus the Konsol accents). */
 export const BUTTON_COLORS = [
   "#ffb02e", "#ff6fa8", "#ff3b30", "#8f7bff", "#5aa9ff", "#4fd1c5",
-  "#7ed957", "#2E7D32", "#1B5E20", "#FBC02D", "#E65100", "#6D4C41",
+  "#7ed957", "#22c55e", "#00e0ff", "#ffe14d", "#ff7a1a", "#d946ef",
 ];
+
+/**
+ * Makes a button color bright enough to stand out on the dark pads. Colors carried over from
+ * the old app are often dark (navy, dark green) and nearly disappear on a dark background.
+ */
+export function vivid(color: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color.trim());
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  const l0 = (max + min) / 2;
+  const s0 = d ? d / (1 - Math.abs(2 * l0 - 1)) : 0;
+  // Greys stay grey (just lighter); real colors get full saturation and mid lightness.
+  const s = s0 < 0.12 ? s0 : Math.max(s0, 0.85);
+  const l = Math.min(Math.max(l0, 0.55), 0.68);
+  return `hsl(${Math.round(h)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%)`;
+}
 
 // Last, so the helpers above exist before the mock uses them.
 export const backendReady: Promise<Backend> = isTauri ? tauriBackend() : Promise.resolve(mockBackend());

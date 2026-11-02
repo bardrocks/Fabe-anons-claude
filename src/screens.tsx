@@ -1,10 +1,10 @@
 // Management screens: Mola, Geçmiş, Kişiler (+ kategoriler), Ayarlar (yedek, ağ, güncelleme).
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   BUTTON_COLORS, errorText, tr,
   type Backend, type BackupFile, type BreakEntry, type CallEntry, type Category, type NetMode,
   type Person, type Release, type RestoreReport, type ServerStatus, type Settings, type TtsEngineChoice,
-  type TtsStatus, type UpdateProgress, ENGINE_LABEL,
+  type TtsStatus, type UpdateProgress, ENGINE_LABEL, vivid,
 } from "./api";
 
 type Toast = (m: string, err?: boolean) => void;
@@ -165,7 +165,7 @@ function ColorPicker({ value, onChange }: { value: string | null; onChange: (c: 
     <div className="swatches">
       <button className={`swatch none ${value === null ? "on" : ""}`} title="Otomatik renk" onClick={() => onChange(null)}>A</button>
       {BUTTON_COLORS.map((c) => (
-        <button key={c} className={`swatch ${value?.toLowerCase() === c.toLowerCase() ? "on" : ""}`} style={{ background: c }} title={c} onClick={() => onChange(c)} />
+        <button key={c} className={`swatch ${value?.toLowerCase() === c.toLowerCase() ? "on" : ""}`} style={{ background: vivid(c) }} title={c} onClick={() => onChange(c)} />
       ))}
       <label className="swatch custom" title="Başka bir renk seç">
         <input type="color" value={value ?? "#ffb02e"} onChange={(e) => onChange(e.target.value)} />+
@@ -257,6 +257,39 @@ export function PeopleScreen({ api, categories, people, toast }: { api: Backend;
     } catch (e) { fail(e); }
   };
 
+  const editorRef = useRef<HTMLDivElement>(null);
+  const draftId = draft ? draft.id ?? 0 : null;
+  useEffect(() => {
+    if (draftId !== null) editorRef.current?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [draftId]);
+
+  // Opens right where it was asked for: at the top for a new button, under the row for an edit.
+  const editor = draft && (
+    <div className="group editor" ref={editorRef}>
+      <h3>{draft.id === null ? "Yeni anons butonu" : `Düzenle: ${people.find((p) => p.id === draft.id)?.name ?? ""}`}</h3>
+      <div className="row">
+        <Field label="İsim (butonda görünen)">
+          <input className="input wide" autoFocus value={draft.name} maxLength={40} onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            onKeyDown={(e) => { if (e.key === "Enter") save(); if (e.key === "Escape") setDraft(null); }} />
+        </Field>
+        <Field label="Kategori">
+          <select className="input" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })}>
+            {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+          </select>
+        </Field>
+      </div>
+      <Field label="Buton rengi"><ColorPicker value={draft.color} onChange={(c) => setDraft({ ...draft, color: c })} /></Field>
+      <Field label="Anons sesi">
+        <SoundPicker api={api} file={draft.soundFile} hint={draft.name} toast={toast} onChange={(f) => setDraft({ ...draft, soundFile: f })} />
+      </Field>
+      <div className="row">
+        <button className="btn primary" onClick={save}>Kaydet</button>
+        <button className="btn" onClick={() => setDraft(null)}>Vazgeç</button>
+      </div>
+    </div>
+  );
+  const edit = (p: Person) => setDraft(draft?.id === p.id ? null : { id: p.id, name: p.name, category: p.category, color: p.color, soundFile: p.soundFile });
+
   return (
     <section className="screen plate">
       <div className="screen-head">
@@ -266,29 +299,7 @@ export function PeopleScreen({ api, categories, people, toast }: { api: Backend;
         </button>
       </div>
 
-      {draft && (
-        <div className="group editor">
-          <h3>{draft.id === null ? "Yeni anons butonu" : `Düzenle: ${people.find((p) => p.id === draft.id)?.name ?? ""}`}</h3>
-          <div className="row">
-            <Field label="İsim (butonda görünen)">
-              <input className="input wide" autoFocus value={draft.name} maxLength={40} onChange={(e) => setDraft({ ...draft, name: e.target.value })} />
-            </Field>
-            <Field label="Kategori">
-              <select className="input" value={draft.category} onChange={(e) => setDraft({ ...draft, category: e.target.value })}>
-                {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
-              </select>
-            </Field>
-          </div>
-          <Field label="Buton rengi"><ColorPicker value={draft.color} onChange={(c) => setDraft({ ...draft, color: c })} /></Field>
-          <Field label="Anons sesi">
-            <SoundPicker api={api} file={draft.soundFile} hint={draft.name} toast={toast} onChange={(f) => setDraft({ ...draft, soundFile: f })} />
-          </Field>
-          <div className="row">
-            <button className="btn primary" onClick={save}>Kaydet</button>
-            <button className="btn" onClick={() => setDraft(null)}>Vazgeç</button>
-          </div>
-        </div>
-      )}
+      {draft && draft.id === null && editor}
 
       <CategoryManager api={api} categories={categories} people={people} toast={toast} />
 
@@ -301,8 +312,13 @@ export function PeopleScreen({ api, categories, people, toast }: { api: Backend;
           <thead><tr><th>İsim</th><th>Kategori</th><th>Ses</th><th>Çağrı</th><th /></tr></thead>
           <tbody>
             {list.map((p) => (
-              <tr key={p.id}>
-                <td><span className="dot" style={{ background: p.color ?? "var(--dim)" }} /> {p.name}</td>
+              <Fragment key={p.id}>
+              <tr className={draft?.id === p.id ? "editing" : ""}>
+                <td>
+                  <button className="name-btn" title="Düzenle" onClick={() => edit(p)}>
+                    <span className="dot" style={{ background: p.color ? vivid(p.color) : "var(--dim)" }} /> {p.name}
+                  </button>
+                </td>
                 <td>
                   <select className="input slim" value={p.category} onChange={(e) => api.setPersonCategory(p.id, e.target.value).catch(fail)}>
                     {categories.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
@@ -313,10 +329,12 @@ export function PeopleScreen({ api, categories, people, toast }: { api: Backend;
                 <td className="mono">{p.count}</td>
                 <td className="actions">
                   {p.soundFile && <button className="btn small" onClick={() => api.previewSound(p.soundFile!).catch(fail)}>▶</button>}
-                  <button className="btn small" onClick={() => setDraft({ id: p.id, name: p.name, category: p.category, color: p.color, soundFile: p.soundFile })}>Düzenle</button>
+                  <button className={`btn small ${draft?.id === p.id ? "on" : ""}`} onClick={() => edit(p)}>{draft?.id === p.id ? "Kapat" : "Düzenle"}</button>
                   <ConfirmButton label="Sil" onConfirm={() => api.deletePerson(p.id).then(() => toast(`${p.name} silindi`), fail)} />
                 </td>
               </tr>
+              {draft?.id === p.id && <tr className="edit-row"><td colSpan={5}>{editor}</td></tr>}
+              </Fragment>
             ))}
           </tbody>
         </table>

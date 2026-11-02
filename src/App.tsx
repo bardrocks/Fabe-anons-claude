@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { backendReady, ENGINE_LABEL, errorText, tr, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Ranked, type Snapshot, type StatsPeriod, type TtsStatus } from "./api";
+import { backendReady, ENGINE_LABEL, errorText, tr, vivid, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Ranked, type Snapshot, type StatsPeriod, type TtsStatus } from "./api";
 import { BreaksScreen, HistoryScreen, PeopleScreen, SettingsScreen } from "./screens";
 
 type Page = "anons" | "mola" | "gecmis" | "kisiler" | "ayarlar";
@@ -12,7 +12,7 @@ const PAD_COLORS = 6;
 const hhmm = (at: string) => at.slice(11, 16);
 
 function padColor(p: Person) {
-  if (p.color) return p.color;
+  if (p.color) return vivid(p.color);
   const sum = [...p.name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
   return `var(--pad-${(sum % PAD_COLORS) + 1})`;
 }
