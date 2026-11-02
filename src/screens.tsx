@@ -3,7 +3,8 @@ import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   BUTTON_COLORS, errorText, tr,
   type Backend, type BackupFile, type BreakEntry, type CallEntry, type Category, type NetMode,
-  type Person, type Release, type RestoreReport, type Settings, type UpdateProgress,
+  type Person, type Release, type RestoreReport, type ServerStatus, type Settings, type TtsEngineChoice,
+  type TtsStatus, type UpdateProgress, ENGINE_LABEL,
 } from "./api";
 
 type Toast = (m: string, err?: boolean) => void;
@@ -54,7 +55,7 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
 
 interface BreakDraft { id: number | null; time: string; label: string; soundFile: string | null; }
 
-export function BreaksScreen({ api, breaks, toast }: { api: Backend; breaks: BreakEntry[]; toast: Toast }) {
+export function BreaksScreen({ api, breaks, mode, toast }: { api: Backend; breaks: BreakEntry[]; mode: NetMode; toast: Toast }) {
   const [draft, setDraft] = useState<BreakDraft | null>(null);
   const sorted = [...breaks].sort((a, b) => a.time.localeCompare(b.time));
 
@@ -80,7 +81,10 @@ export function BreaksScreen({ api, breaks, toast }: { api: Backend; breaks: Bre
         <h1>MOLA</h1>
         <button className="btn primary" onClick={() => setDraft({ id: null, time: "", label: "Mola", soundFile: null })}>+ Mola saati ekle</button>
       </div>
-      <p>Uygulama açıkken, buradaki her saatte seçilen ses dosyası kendiliğinden çalınır (müzik o sırada kısılır).</p>
+      <p>Uygulama açıkken, buradaki her saatte seçilen ses dosyası kendiliğinden çalınır (gongsuz; müzik o sırada kısılır).</p>
+      {mode === "istemci" && (
+        <p className="warn">Bu bilgisayar istemci modunda, bu yüzden molalar burada çalmaz. Mola saatlerini hoparlöre bağlı sunucu bilgisayarda tanımlayın.</p>
+      )}
 
       {draft && (
         <div className="group editor">
@@ -120,17 +124,32 @@ export function BreaksScreen({ api, breaks, toast }: { api: Backend; breaks: Bre
 
 /* ---------------- Geçmiş ---------------- */
 
-export function HistoryScreen({ history }: { history: CallEntry[] }) {
+const KIND_LABEL: Record<string, string> = { person: "İsim", tts: "Canlı", break: "Mola" };
+
+export function HistoryScreen({ api, history }: { api: Backend; history: CallEntry[] }) {
+  const [query, setQuery] = useState("");
+  const [rows, setRows] = useState<CallEntry[] | null>(null);
+  useEffect(() => {
+    let alive = true;
+    // Short pause so typing doesn't search on every key.
+    const t = window.setTimeout(() => api.searchHistory(query).then((r) => alive && setRows(r), () => {}), query ? 200 : 0);
+    return () => { alive = false; window.clearTimeout(t); };
+  }, [api, query, history]);
+  const list = rows ?? history;
   return (
     <section className="screen plate">
       <h1>GEÇMİŞ</h1>
-      <p>Son 30 anons. Hangi bilgisayardan gönderildiği de görünür.</p>
+      <div className="row">
+        <input className="input grow" type="search" value={query} onChange={(e) => setQuery(e.target.value)}
+          placeholder="İsim, metin, bilgisayar adı veya tarih (2026-11-02) ara" aria-label="Geçmişte ara" />
+      </div>
+      <p>{query ? `${list.length} sonuç${list.length === 200 ? " (ilk 200)" : ""}` : "Son 200 anons. Hangi bilgisayardan gönderildiği de görünür."}</p>
       <table className="table">
-        <thead><tr><th>Zaman</th><th>Anons</th><th>Kaynak</th></tr></thead>
+        <thead><tr><th>Zaman</th><th>Tür</th><th>Anons</th><th>Kaynak</th></tr></thead>
         <tbody>
-          {history.length ? history.map((h) => (
-            <tr key={h.id}><td className="mono">{h.at.slice(0, 16)}</td><td>{h.kind === "tts" ? `Canlı: ${h.title}` : h.title}</td><td>{h.source}</td></tr>
-          )) : <tr><td colSpan={3} className="dim">Henüz anons yok.</td></tr>}
+          {list.length ? list.map((h) => (
+            <tr key={h.id}><td className="mono">{h.at.slice(0, 16)}</td><td>{KIND_LABEL[h.kind] ?? h.kind}</td><td>{h.title}</td><td>{h.source}</td></tr>
+          )) : <tr><td colSpan={4} className="dim">{query ? "Eşleşen anons yok." : "Henüz anons yok."}</td></tr>}
         </tbody>
       </table>
     </section>
@@ -381,7 +400,15 @@ function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; set
   const [test, setTest] = useState<{ ok: boolean; text: string } | null>(null);
   const [testing, setTesting] = useState(false);
   const [ips, setIps] = useState<string[]>([]);
+  const [status, setStatus] = useState<ServerStatus | null>(null);
   useEffect(() => { api.localIps().then(setIps, () => {}); }, [api]);
+  useEffect(() => {
+    if (settings.netMode !== "sunucu") return;
+    const load = () => api.netStatus().then(setStatus, () => {});
+    load();
+    const t = window.setInterval(load, 5000);
+    return () => window.clearInterval(t);
+  }, [api, settings.netMode]);
 
   const save = async () => {
     try {
@@ -426,12 +453,32 @@ function NetworkSection({ api, settings, toast, onChanged }: { api: Backend; set
       {mode === "sunucu" && ips.length > 0 && (
         <p>İstemcilerde sunucu IP adresi olarak şunu yazın: <b className="mono">{ips.join(", ")}</b></p>
       )}
+      {settings.netMode === "sunucu" && status && (
+        <div className="server-status">
+          {status.listening ? (
+            <span className="result">● Sunucu çalışıyor, {status.port} portunu dinliyor</span>
+          ) : (
+            <span className="result err">● Sunucu çalışmıyor{status.error ? `: ${status.error}` : ""}</span>
+          )}
+          {status.clients.length > 0 ? (
+            <ul className="list">
+              {status.clients.map((c) => (
+                <li key={c.ip}><span className="t">{c.lastSeen}</span><span className="what">{c.name}</span><span className="src">{c.ip}</span></li>
+              ))}
+            </ul>
+          ) : <p>Henüz bağlanan istemci yok.</p>}
+        </div>
+      )}
       <div className="row">
         <button className="btn primary" onClick={save}>Kaydet</button>
         {mode === "istemci" && <button className="btn" disabled={testing} onClick={runTest}>{testing ? "Deneniyor…" : "Bağlantıyı test et"}</button>}
         {test && <span className={`result ${test.ok ? "" : "err"}`}>{test.text}</span>}
       </div>
-      <p className="dim">Not: Sunucu ve istemci arasında anons gönderme bir sonraki sürümde etkinleşiyor; ayarlar şimdiden kaydedilir.</p>
+      <p className="dim">
+        İstemci modunda butonlara basınca anons sunucuya gider ve sunucunun hoparlöründen çalar. Sunucuda o ses yoksa
+        dosya otomatik gönderilir, yani her bilgisayar kendi kişi listesini ve kayıtlarını kullanabilir. Sunucu ilk açıldığında
+        Windows güvenlik duvarı izin isterse "İzin ver"e basın.
+      </p>
     </div>
   );
 }
@@ -483,6 +530,49 @@ export function UpdateSection({ api, settings, release, onRelease, toast }: {
   );
 }
 
+const EMA_STATE: Record<TtsStatus["ema"], string> = {
+  yok: "Bu kurulumda yok",
+  kapali: "Kapalı (ilk anonsta açılır)",
+  yukleniyor: "Yükleniyor…",
+  hazir: "Hazır",
+  hata: "Açılamadı",
+};
+
+function TtsSection({ api, settings, toast, onChanged }: { api: Backend; settings: Settings; toast: Toast; onChanged: () => void }) {
+  const [status, setStatus] = useState<TtsStatus | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.ttsStatus().then((s) => alive && setStatus(s), () => {});
+    load();
+    const t = window.setInterval(load, 3000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [api]);
+  const choose = (v: TtsEngineChoice) => api.setSetting("tts_engine", v).then(onChanged, (e) => toast(errorText(e), true));
+  const choices: [TtsEngineChoice, string, string][] = [
+    ["otomatik", "Otomatik", "ema-lightning, olmazsa Piper"],
+    ["ema", "ema-lightning", "Yalnızca ana motor"],
+    ["piper", "Piper", "Yalnızca yedek motor"],
+  ];
+  return (
+    <div className="group">
+      <h3>Canlı anons motoru</h3>
+      <div className="segmented">
+        {choices.map(([k, l, d]) => (
+          <button key={k} className={settings.ttsEngine === k ? "on" : ""} onClick={() => choose(k)}><b>{l}</b><small>{d}</small></button>
+        ))}
+      </div>
+      {status && (
+        <dl className="engine-state">
+          <dt>ema-lightning</dt><dd>{EMA_STATE[status.ema]}{status.emaError ? ` (${status.emaError})` : ""}</dd>
+          <dt>Piper</dt><dd>{status.piper === "hazir" ? "Hazır" : "Bu kurulumda yok"}</dd>
+          {status.lastEngine && <><dt>Son anons</dt><dd>{ENGINE_LABEL[status.lastEngine]}{status.lastNote ? ` · ${status.lastNote}` : ""}</dd></>}
+        </dl>
+      )}
+      <p>Canlı anonslar da 2 kez okunur. Sorun olursa ayrıntılar veri klasöründeki hata.log ve tts.log dosyalarına yazılır.</p>
+    </div>
+  );
+}
+
 export function SettingsScreen({ api, settings, release, onRelease, toast, onChanged }: {
   api: Backend; settings: Settings; release: Release | null; onRelease: (r: Release | null) => void; toast: Toast; onChanged: () => void;
 }) {
@@ -499,6 +589,7 @@ export function SettingsScreen({ api, settings, release, onRelease, toast, onCha
         </label>
         <p>İsimler her zaman 2 kez okunur. Anons sırasında diğer programların sesi %10'a kısılır, bitince eski seviyesine döner.</p>
       </div>
+      <TtsSection api={api} settings={settings} toast={toast} onChanged={onChanged} />
       <BackupSection api={api} toast={toast} onChanged={onChanged} />
       <NetworkSection key={settings.netMode + settings.netServerIp + settings.netPort + settings.pcName} api={api} settings={settings} toast={toast} onChanged={onChanged} />
     </section>

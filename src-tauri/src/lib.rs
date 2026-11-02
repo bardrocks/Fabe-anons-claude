@@ -3,10 +3,13 @@
 mod backup;
 mod db;
 mod ducking;
+mod media;
 mod migrate;
+mod network;
 mod paths;
 mod player;
 mod sounds;
+mod tts;
 mod update;
 
 use db::{BreakEntry, CallEntry, Category, Person, Store};
@@ -19,7 +22,7 @@ use tauri::{Emitter, Manager, State};
 
 /// Name shown in history for announcements made on this computer.
 const LOCAL_SOURCE: &str = "Bu bilgisayar";
-/// Names are always read twice.
+/// Names and live announcements are always read twice.
 const NAME_REPS: u32 = 2;
 /// Same port as the old app, so old clients can still find the server.
 const DEFAULT_PORT: u16 = 55555;
@@ -31,6 +34,73 @@ fn default_pc_name() -> String {
 pub struct App {
     store: Store,
     player: Player,
+    /// Running only in "sunucu" mode.
+    server: Mutex<Option<network::Server>>,
+    tts: tts::Tts,
+}
+
+struct NetConfig {
+    mode: String,
+    ip: String,
+    port: u16,
+    me: String,
+}
+
+impl App {
+    fn net(&self) -> NetConfig {
+        let s = Settings::load(&self.store);
+        NetConfig { mode: s.net_mode, ip: s.net_server_ip, port: s.net_port, me: s.pc_name }
+    }
+}
+
+/// Starts or stops the server to match the saved network settings.
+fn apply_network(app: &Arc<App>, handle: &tauri::AppHandle) {
+    let cfg = app.net();
+    let mut slot = app.server.lock().unwrap_or_else(|e| e.into_inner());
+    *slot = None; // stops a running server
+    if cfg.mode != "sunucu" {
+        return;
+    }
+    let (a, h) = (app.clone(), handle.clone());
+    let handler: network::Handler = Arc::new(move |inc: network::Incoming| {
+        let kind = match inc.kind.as_str() {
+            "break" => Kind::Break,
+            "tts" => Kind::Tts,
+            _ => Kind::Person,
+        };
+        let (file, temp) = match &inc.speak {
+            // Old clients send only the text; this PC reads it.
+            Some((text, _, rate)) => {
+                let s = Settings::load(&a.store);
+                (a.tts.speak(text, *rate, tts::Preference::parse(&s.tts_engine))?.file, true)
+            }
+            None => (inc.file, kind == Kind::Tts),
+        };
+        a.player.enqueue(Item {
+            id: a.player.next_id(),
+            title: inc.title.clone(),
+            kind,
+            source: inc.from.clone(),
+            file,
+            reps: if kind == Kind::Break { inc.reps.max(1) } else { NAME_REPS },
+            gain: if kind == Kind::Tts { inc.gain } else { 1.0 },
+            temp,
+        });
+        // If the server has someone with the same name, count it in their statistics.
+        let person = match kind {
+            Kind::Person => a.store.people().ok().and_then(|ps| ps.into_iter().find(|p| p.name == inc.title)).map(|p| p.id),
+            _ => None,
+        };
+        let kind_name = match kind {
+            Kind::Break => "break",
+            Kind::Tts => "tts",
+            Kind::Person => "person",
+        };
+        a.store.log_call(person, kind_name, &inc.title, &inc.from)?;
+        let _ = h.emit("data-changed", ());
+        Ok(())
+    });
+    *slot = Some(network::Server::start(cfg.port, cfg.me, paths::network_cache_dir(), paths::sounds_dir(), handler));
 }
 
 type AppState<'a> = State<'a, Arc<App>>;
@@ -41,6 +111,8 @@ struct Settings {
     volume: f32,
     tts_gain: f32,
     tts_rate: f32,
+    /// "otomatik" | "ema" | "piper"
+    tts_engine: String,
     chime: bool,
     /// "yerel" | "sunucu" | "istemci"
     net_mode: String,
@@ -56,6 +128,7 @@ impl Settings {
             volume: s.setting_f32("volume", 0.8),
             tts_gain: s.setting_f32("tts_gain", 4.0),
             tts_rate: s.setting_f32("tts_rate", 1.0),
+            tts_engine: s.setting("tts_engine").ok().flatten().unwrap_or_else(|| "otomatik".into()),
             chime: s.setting("chime").ok().flatten().map(|v| v != "0" && v != "false").unwrap_or(true),
             net_mode: s.setting("net_mode").ok().flatten().unwrap_or_else(|| "yerel".into()),
             net_server_ip: s.setting("net_server_ip").ok().flatten().unwrap_or_default(),
@@ -94,28 +167,135 @@ fn snapshot(app: AppState) -> Result<Snapshot, String> {
 }
 
 #[tauri::command]
-fn call_person(id: i64, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+async fn call_person(id: i64, app: tauri::State<'_, Arc<App>>, handle: tauri::AppHandle) -> Result<String, String> {
+    let app = app.inner().clone();
     let p = app.store.person(id).map_err(err)?.ok_or("Kişi bulunamadı")?;
     let file = p.sound_file.as_deref().ok_or_else(|| format!("{} için ses kaydı yok", p.name))?;
+    let path = paths::sounds_dir().join(file);
+    let cfg = app.net();
+    if cfg.mode == "istemci" {
+        // This PC sends; the server plays.
+        let (title, me) = (p.name.clone(), cfg.me.clone());
+        tauri::async_runtime::spawn_blocking(move || {
+            network::send_call(&cfg.ip, cfg.port, &cfg.me, &title, "person", NAME_REPS, 1.0, &path)
+        })
+        .await
+        .map_err(err)?
+        .map_err(|e| err(format!("{e:#}")))?;
+        app.store.log_call(Some(p.id), "person", &p.name, &format!("{me} → sunucu")).map_err(err)?;
+        let _ = handle.emit("data-changed", ());
+        return Ok(format!("{} sunucuya gönderildi", p.name));
+    }
     app.player.enqueue(Item {
         id: app.player.next_id(),
         title: p.name.clone(),
         kind: Kind::Person,
         source: LOCAL_SOURCE.into(),
-        file: paths::sounds_dir().join(file),
+        file: path,
         reps: NAME_REPS,
         gain: 1.0,
         temp: false,
     });
     app.store.log_call(Some(p.id), "person", &p.name, LOCAL_SOURCE).map_err(err)?;
     let _ = handle.emit("data-changed", ());
-    Ok(())
+    Ok(String::new())
 }
 
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SpeakResult {
+    engine: tts::Engine,
+    /// Shown to the user: why the fallback was used, or that it went to the server.
+    note: Option<String>,
+}
+
+/// "SESLENDİR": reads the text twice, with ema-lightning or (if that fails) Piper.
 #[tauri::command]
-fn speak(text: String) -> Result<(), String> {
-    let _ = text;
-    Err("Canlı anons motoru bir sonraki sürümde bağlanacak".into())
+async fn speak(text: String, app: tauri::State<'_, Arc<App>>, handle: tauri::AppHandle) -> Result<SpeakResult, String> {
+    let app = app.inner().clone();
+    let text = text.trim().to_string();
+    if text.is_empty() {
+        return Err("Okunacak metni yazın".into());
+    }
+    let s = Settings::load(&app.store);
+    let pref = tts::Preference::parse(&s.tts_engine);
+    let (a, t) = (app.clone(), text.clone());
+    let spoken = tauri::async_runtime::spawn_blocking(move || a.tts.speak(&t, s.tts_rate, pref))
+        .await
+        .map_err(err)?
+        .map_err(|e| err(format!("{e:#}")))?;
+    let cfg = app.net();
+    if cfg.mode == "istemci" {
+        let (file, title, gain, me) = (spoken.file.clone(), text.clone(), s.tts_gain, cfg.me.clone());
+        let sent = tauri::async_runtime::spawn_blocking(move || {
+            let r = network::send_call(&cfg.ip, cfg.port, &cfg.me, &title, "tts", NAME_REPS, gain, &file);
+            let _ = std::fs::remove_file(&file);
+            r
+        })
+        .await
+        .map_err(err)?;
+        sent.map_err(|e| err(format!("{e:#}")))?;
+        app.store.log_call(None, "tts", &text, &format!("{me} → sunucu")).map_err(err)?;
+        changed(&handle);
+        let note = match spoken.note {
+            Some(n) => format!("Sunucuya gönderildi. {n}"),
+            None => "Sunucuya gönderildi".into(),
+        };
+        return Ok(SpeakResult { engine: spoken.engine, note: Some(note) });
+    }
+    app.player.enqueue(Item {
+        id: app.player.next_id(),
+        title: text.clone(),
+        kind: Kind::Tts,
+        source: LOCAL_SOURCE.into(),
+        file: spoken.file,
+        reps: NAME_REPS,
+        gain: s.tts_gain,
+        temp: true,
+    });
+    app.store.log_call(None, "tts", &text, LOCAL_SOURCE).map_err(err)?;
+    changed(&handle);
+    Ok(SpeakResult { engine: spoken.engine, note: spoken.note })
+}
+
+/// "En çok çağrılanlar" for bugün / hafta / ay. ("tumu" uses the people's own counters,
+/// which include counts carried over from the old app.)
+#[tauri::command]
+fn stats(period: String, app: AppState) -> Result<Vec<db::Ranked>, String> {
+    let now = chrono::Local::now();
+    let since = match period.as_str() {
+        "bugun" => now.format("%Y-%m-%d 00:00:00").to_string(),
+        "hafta" => (now - chrono::Duration::days(6)).format("%Y-%m-%d 00:00:00").to_string(),
+        "ay" => (now - chrono::Duration::days(29)).format("%Y-%m-%d 00:00:00").to_string(),
+        _ => return Err("Geçersiz dönem".into()),
+    };
+    app.store.top_called(&since, 5).map_err(err)
+}
+
+/// Lower-cases the Turkish way (I → ı, İ → i) so searches match what people type.
+fn tr_lower(s: &str) -> String {
+    s.replace('I', "ı").replace('İ', "i").to_lowercase()
+}
+
+/// "Geçmiş" page: the latest announcements, optionally only those matching `query`.
+#[tauri::command]
+fn search_history(query: String, app: AppState) -> Result<Vec<CallEntry>, String> {
+    let q = tr_lower(query.trim());
+    let rows = app.store.history(if q.is_empty() { 200 } else { 20_000 }).map_err(err)?;
+    if q.is_empty() {
+        return Ok(rows);
+    }
+    Ok(rows
+        .into_iter()
+        .filter(|h| tr_lower(&h.title).contains(&q) || tr_lower(&h.source).contains(&q) || h.at.contains(&q))
+        .take(200)
+        .collect())
+}
+
+/// Which live-announcement engines are ready ("Ayarlar > Canlı anons" and the mic panel).
+#[tauri::command]
+fn tts_status(app: AppState) -> tts::Status {
+    app.tts.status()
 }
 
 #[tauri::command]
@@ -329,27 +509,19 @@ fn open_backups_folder() -> Result<String, String> {
     Ok(dir.to_string_lossy().into())
 }
 
-/// "Bağlantıyı test et": can this PC reach the server?
+/// "Bağlantıyı test et": is there a FABE Anons server at this address?
 #[tauri::command]
-async fn test_connection(ip: String, port: u16) -> Result<String, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        use std::net::ToSocketAddrs;
-        let ip = ip.trim().to_string();
-        if ip.is_empty() {
-            return Err("Önce sunucunun IP adresini yazın".to_string());
-        }
-        let addr = (ip.as_str(), port)
-            .to_socket_addrs()
-            .map_err(|_| format!("\"{ip}\" geçerli bir adres değil"))?
-            .next()
-            .ok_or("Adres çözülemedi")?;
-        let start = std::time::Instant::now();
-        std::net::TcpStream::connect_timeout(&addr, Duration::from_secs(3))
-            .map(|_| format!("Bağlantı başarılı ({} ms)", start.elapsed().as_millis()))
-            .map_err(|_| format!("{ip}:{port} adresine ulaşılamadı. Sunucu açık mı, aynı ağda mısınız, güvenlik duvarı izin veriyor mu?"))
-    })
-    .await
-    .map_err(err)?
+async fn test_connection(ip: String, port: u16, app: tauri::State<'_, Arc<App>>) -> Result<String, String> {
+    let me = app.net().me;
+    tauri::async_runtime::spawn_blocking(move || network::ping(&ip, port, &me).map_err(|e| e.to_string()))
+        .await
+        .map_err(err)?
+}
+
+/// Server state for the network page: listening or not, and which computers have connected.
+#[tauri::command]
+fn net_status(app: AppState) -> Option<network::ServerStatus> {
+    app.server.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.status())
 }
 
 /// Local IP addresses of this PC (shown on the network page so clients know what to type).
@@ -411,7 +583,7 @@ fn stop_all(app: AppState) {
 }
 
 #[tauri::command]
-fn set_setting(key: String, value: String, app: AppState) -> Result<(), String> {
+fn set_setting(key: String, value: String, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
     match key.as_str() {
         "volume" => {
             let v: f32 = value.parse().map_err(err)?;
@@ -420,6 +592,14 @@ fn set_setting(key: String, value: String, app: AppState) -> Result<(), String> 
         "chime" => app.player.set_chime(value != "0" && value != "false"),
         "tts_gain" | "tts_rate" => {
             value.parse::<f32>().map_err(err)?;
+        }
+        "tts_engine" => {
+            if !["otomatik", "ema", "piper"].contains(&value.as_str()) {
+                return Err("Geçersiz anons motoru".into());
+            }
+            if value != "piper" {
+                app.tts.warm_up();
+            }
         }
         "net_mode" => {
             if !["yerel", "sunucu", "istemci"].contains(&value.as_str()) {
@@ -432,7 +612,11 @@ fn set_setting(key: String, value: String, app: AppState) -> Result<(), String> 
         }
         _ => return Err(format!("Bilinmeyen ayar: {key}")),
     }
-    app.store.set_setting(&key, &value).map_err(err)
+    app.store.set_setting(&key, &value).map_err(err)?;
+    if matches!(key.as_str(), "net_mode" | "net_port" | "pc_name") {
+        apply_network(app.inner(), &handle);
+    }
+    Ok(())
 }
 
 /// Plays scheduled breaks at their HH:MM, once per minute.
@@ -445,6 +629,10 @@ fn start_break_scheduler(app: Arc<App>, handle: tauri::AppHandle) {
                 let now = chrono::Local::now().format("%H:%M").to_string();
                 if now != last {
                     last = now.clone();
+                    // Clients don't play breaks; the server PC (with the speakers) does.
+                    if app.net().mode == "istemci" {
+                        continue;
+                    }
                     for b in app.store.breaks().unwrap_or_default().into_iter().filter(|b| b.time == now) {
                         let title = if b.label.is_empty() { "Mola".to_string() } else { b.label.clone() };
                         app.player.enqueue(Item {
@@ -522,6 +710,8 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(|tauri_app| {
+            let resource_dir = tauri_app.path().resource_dir().ok();
+            media::init(resource_dir.clone());
             let store = open_store()?;
             let settings = Settings::load(&store);
             let handle = tauri_app.handle().clone();
@@ -533,7 +723,12 @@ pub fn run() {
                 settings.volume,
                 settings.chime,
             );
-            let app = Arc::new(App { store, player });
+            let tts = tts::Tts::new(resource_dir, &paths::data_dir());
+            if settings.tts_engine != "piper" {
+                tts.warm_up(); // ema-lightning loads in the background
+            }
+            let app = Arc::new(App { store, player, server: Mutex::new(None), tts });
+            apply_network(&app, &handle);
             start_break_scheduler(app.clone(), handle);
             tauri_app.manage(app);
             Ok(())
@@ -555,12 +750,16 @@ pub fn run() {
             delete_break,
             call_person,
             speak,
+            tts_status,
+            stats,
+            search_history,
             import_old_backup,
             create_backup,
             restore_backup,
             list_backups,
             open_backups_folder,
             test_connection,
+            net_status,
             local_ips,
             check_update,
             install_update,

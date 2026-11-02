@@ -34,6 +34,14 @@ pub struct Category {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct Ranked {
+    pub person_id: Option<i64>,
+    pub name: String,
+    pub count: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CallEntry {
     pub id: i64,
     pub at: String,
@@ -348,6 +356,28 @@ impl Store {
         Ok(rows.collect::<std::result::Result<_, _>>()?)
     }
 
+    /// Most-called names since `since` ("YYYY-MM-DD HH:MM:SS", local time).
+    pub fn top_called(&self, since: &str, limit: i64) -> Result<Vec<Ranked>> {
+        let c = self.c();
+        let mut st = c.prepare(
+            "SELECT MAX(person_id), title, COUNT(*) AS n FROM calls
+             WHERE kind = 'person' AND at >= ?1
+             GROUP BY COALESCE(person_id, -1), CASE WHEN person_id IS NULL THEN title ELSE '' END
+             ORDER BY n DESC, title LIMIT ?2",
+        )?;
+        let rows = st.query_map(params![since, limit], |r| Ok(Ranked { person_id: r.get(0)?, name: r.get(1)?, count: r.get(2)? }))?;
+        let mut out: Vec<Ranked> = rows.collect::<std::result::Result<_, _>>()?;
+        // Show the person's current name if they were renamed since.
+        for r in &mut out {
+            if let Some(id) = r.person_id {
+                if let Ok(name) = c.query_row("SELECT name FROM people WHERE id = ?1", [id], |x| x.get::<_, String>(0)) {
+                    r.name = name;
+                }
+            }
+        }
+        Ok(out)
+    }
+
     pub fn add_break(&self, time: &str, sound_file: &str, label: &str) -> Result<()> {
         // Importing the same backup twice must not create duplicate breaks.
         self.c().execute(
@@ -400,6 +430,24 @@ mod tests {
         assert_eq!(p.count, 11);
         assert_eq!(p.today, 1);
         assert_eq!(s.history(5).unwrap()[0].title, "Ayşe");
+    }
+
+    #[test]
+    fn top_called_counts_only_the_period_and_uses_current_names() {
+        let s = Store::memory().unwrap();
+        let a = s.add_person("Ayşe", "Personeller", None, Some("ayse.mp3"), 50).unwrap();
+        let b = s.add_person("Eren", "Personeller", None, Some("eren.mp3"), 0).unwrap();
+        for _ in 0..2 {
+            s.log_call(Some(b), "person", "Eren", "Bu bilgisayar").unwrap();
+        }
+        s.log_call(Some(a), "person", "Ayşe", "Bu bilgisayar").unwrap();
+        s.log_call(None, "person", "Misafir", "KASA-2").unwrap();
+        s.log_call(None, "tts", "Araç sahibi", "Bu bilgisayar").unwrap();
+        s.c().execute("UPDATE calls SET at = '2020-01-01 10:00:00' WHERE person_id = ?1", [a]).unwrap();
+        s.update_person(b, "Eren Kaya", "Personeller", None, None).unwrap();
+        let top = s.top_called("2026-01-01 00:00:00", 5).unwrap();
+        let names: Vec<_> = top.iter().map(|r| (r.name.as_str(), r.count)).collect();
+        assert_eq!(names, [("Eren Kaya", 2), ("Misafir", 1)]);
     }
 
     #[test]

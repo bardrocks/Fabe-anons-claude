@@ -24,10 +24,25 @@ Bu sürüm Claude ile yapıldı.
   ya da Ayarlar > "Eski yedekten geri yükle" ile eski uygulamanın yedek ZIP'inden.
   Eski klasör değiştirilmez.
 
-## Sıradakiler
+- Canlı anons: ema-lightning ana motor, sorun olursa otomatik Piper. Metin 2 kez okunur.
+  Hangi motorun okuduğu ekranda görünür; Ayarlar > Canlı anons motoru'ndan seçilebilir.
+- Ağ: Sunucu bilgisayar anonsları çalar; istemciler gönderir. İstemcideki ses sunucuda yoksa
+  kendiliğinden gönderilir. Eski sürüm (v3) istemciler de çalışır.
+- Her ses biçimi (WhatsApp .opus, .m4a, .webm, .amr, .wma...) MP3'e çevrilir ve ses seviyesi eşitlenir.
 
-Canlı anons (ema-lightning ana motor, Piper yedek), tüm ses biçimleri için FFmpeg dönüştürme
-(WhatsApp .opus dahil), sunucu/istemci arasında anons gönderme.
+## Uygulamayla gelen programlar
+
+Derleme sırasında GitHub Actions indirir ve kurulum dosyasına koyar (depoda tutulmaz):
+
+| Klasör | Ne | Nereden |
+|---|---|---|
+| `src-tauri/resources/ffmpeg.exe` | Ses dönüştürme | GyanD/codexffmpeg 7.1 |
+| `src-tauri/resources/tts/fabe-tts/` | ema-lightning motoru (`tts/fabe_tts.py`, PyInstaller) | PyPI, sürümler `tts/requirements.txt` |
+| `src-tauri/resources/tts/models/` | ema-lightning modeli | Hugging Face canberkkkkkk/ema-lightning |
+| `src-tauri/resources/piper/` | Piper ve Türkçe ses (tr_TR-dfki-medium) | rhasspy/piper 2023.11.14-2 |
+
+Derleme, iki motoru da Windows'ta bir cümle okutarak dener; okuyamazsa sürüm yayınlanmaz.
+Motorun kendi kayıtları veri klasöründeki `tts.log` dosyasındadır.
 
 ## Geliştirme
 
