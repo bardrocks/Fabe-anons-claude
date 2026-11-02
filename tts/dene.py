@@ -9,6 +9,8 @@ from pathlib import Path
 
 
 def main(exe, models):
+    # The Windows runner's console is cp1252; Turkish text must not crash the check itself.
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
     out = Path(tempfile.gettempdir()) / "fabe-tts-deneme.wav"
     out.unlink(missing_ok=True)
     start = time.time()
@@ -16,6 +18,15 @@ def main(exe, models):
                          text=True, encoding="utf-8")
     timer = threading.Timer(300, p.kill)
     timer.start()
+    try:
+        check(p, out, start)
+    finally:
+        timer.cancel()
+        if p.poll() is None:
+            p.kill()
+
+
+def check(p, out, start):
     ready = json.loads(p.stdout.readline())
     print("açılış:", ready, f"{time.time() - start:.1f} sn")
     assert ready.get("ready"), ready
@@ -31,7 +42,6 @@ def main(exe, models):
     p.stdin.write('{"quit": true}\n')
     p.stdin.close()
     p.wait(timeout=30)
-    timer.cancel()
 
 
 if __name__ == "__main__":
