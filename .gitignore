@@ -22,3 +22,6 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
+/src-tauri/resources/tts/
+/src-tauri/resources/piper/
+/build-tts/

@@ -1,0 +1,7 @@
+# Canlı anons motoru; sürümler sabit, böylece her derleme aynı motoru kurar.
+ema-lightning==1.1.2
+torch==2.14.1
+normalizer-tr==0.8.1
+numpy<3
+huggingface-hub
+pyinstaller==6.22.3

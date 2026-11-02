@@ -41,3 +41,8 @@ pub fn ensure() -> std::io::Result<()> {
 pub fn backups_dir() -> PathBuf {
     data_dir().join("yedekler")
 }
+
+/// Sounds received from client PCs (named by their SHA-256), kept so they upload only once.
+pub fn network_cache_dir() -> PathBuf {
+    data_dir().join("ag-sesler")
+}

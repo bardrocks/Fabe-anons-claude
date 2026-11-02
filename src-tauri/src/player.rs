@@ -20,7 +20,6 @@ const TICK: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
 #[serde(rename_all = "lowercase")]
-#[allow(dead_code)] // Tts is wired up with the live-announcement engine.
 pub enum Kind {
     Person,
     Tts,
@@ -253,6 +252,9 @@ impl Engine {
                 Ok(c) => c.with_gain(item.gain),
                 Err(e) => {
                     log::error!("{e:#}");
+                    if item.temp {
+                        let _ = std::fs::remove_file(&item.file);
+                    }
                     self.emit(PlayerState { error: Some(format!("{}: ses dosyası çalınamadı", item.title)), ..Default::default() });
                     continue;
                 }
@@ -274,7 +276,8 @@ impl Engine {
                     rep,
                     reps,
                 };
-                if rep == 1 && self.chime && !self.play(&sink, &Clip::chime(), &now) {
+                // Breaks (and "Dinle" previews) play without the gong.
+                if rep == 1 && self.chime && item.kind != Kind::Break && !self.play(&sink, &Clip::chime(), &now) {
                     break;
                 }
                 if !self.play(&sink, &clip, &now) {

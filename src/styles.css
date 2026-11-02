@@ -88,7 +88,10 @@ button { cursor: pointer; }
 .engine .e1 { font-weight: 600; font-size: 12.5px; display: flex; align-items: center; gap: 7px; }
 .engine .e2 { font-size: 10.5px; color: var(--dim); }
 .engine .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--led); box-shadow: 0 0 8px var(--led); }
-.engine.ready .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.engine .dot:not(.wait):not(.off) { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+.engine .dot.wait { background: var(--led); animation: blink 1s infinite; }
+.engine .dot.off { background: var(--dim); box-shadow: none; }
+@media (prefers-reduced-motion: reduce) { .engine .dot.wait { animation: none; } }
 
 /* Pads */
 .deck { padding: 14px; display: flex; flex-direction: column; gap: 12px; min-height: 0; min-width: 0; }
@@ -108,9 +111,10 @@ button { cursor: pointer; }
 .tab span { margin-left: 4px; opacity: .7; }
 .pads { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pad-min-width), 1fr)); gap: 9px; overflow: auto; align-content: start; padding: 4px; }
 .card { --c: var(--dim); position: relative; min-height: var(--pad-min-height); max-width: 100%; border: 0; border-radius: 12px;
-  background: linear-gradient(180deg, var(--key-top), #202124); box-shadow: 0 3px 0 #0c0c0d, inset 0 1px 0 rgba(255,255,255,.06);
+  background: linear-gradient(180deg, color-mix(in srgb, var(--c) 10%, var(--key-top)), #202124); box-shadow: 0 3px 0 #0c0c0d, inset 0 1px 0 rgba(255,255,255,.06);
   padding: 14px 12px 10px; display: flex; flex-direction: column; justify-content: flex-end; text-align: left; transition: transform .06s, box-shadow .06s; }
-.card::before { content: ""; position: absolute; left: 10px; right: 10px; top: 6px; height: 2px; border-radius: 2px; background: var(--c); opacity: .35; }
+.card::before { content: ""; position: absolute; left: 8px; right: 8px; top: 6px; height: 6px; border-radius: 3px; background: var(--c); opacity: .95;
+  box-shadow: 0 0 10px color-mix(in srgb, var(--c) 45%, transparent); }
 .card:active { transform: translateY(2px); box-shadow: 0 1px 0 #0c0c0d; }
 .card:disabled { opacity: .45; cursor: not-allowed; }
 .card .count { position: absolute; top: 14px; right: 11px; font-family: var(--f-led); font-weight: 700; font-size: 16px; color: var(--dim); line-height: 1; }
@@ -119,7 +123,7 @@ button { cursor: pointer; }
 .card .state { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .1em; color: var(--dim); min-height: 12px; text-transform: uppercase; }
 .card.playing { background: radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--c) 55%, var(--key-top)), #202124 75%);
   box-shadow: 0 4px 0 #0c0c0d, 0 0 28px color-mix(in srgb, var(--c) 55%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--c) 80%, transparent); }
-.card.playing::before { opacity: 1; box-shadow: 0 0 10px var(--c); }
+.card.playing::before { opacity: 1; box-shadow: 0 0 14px var(--c); }
 .card.playing .count, .card.playing .state { color: var(--text); }
 .card.queued::before { opacity: 1; animation: blink 1s steps(2) infinite; }
 .card.queued .state { color: var(--led); }
@@ -240,3 +244,28 @@ input[type=time].input { color-scheme: dark; font-family: var(--f-mono); font-si
 .navkey.update::after { background: var(--ok); box-shadow: 0 0 6px var(--ok); }
 .navkey.update + .net { margin-top: 10px; }
 @media (max-width: 700px) { .segmented { grid-template-columns: 1fr; } }
+.warn { color: var(--led) !important; }
+.server-status { display: flex; flex-direction: column; gap: 8px; }
+
+/* Live announcement engine state (Ayarlar) */
+.engine-state { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; margin: 12px 0 4px; font-size: 13px; }
+.engine-state dt { color: var(--dim); }
+.engine-state dd { margin: 0; overflow-wrap: anywhere; }
+
+/* Stats period picker (side panel) */
+.periods { display: flex; gap: 4px; margin: -2px 0 10px; }
+.periods button { flex: 1; background: var(--groove); border: 1px solid var(--edge); border-radius: 6px; color: var(--dim); font: 600 11px var(--f-mono); letter-spacing: .06em; padding: 4px 0; cursor: pointer; }
+.periods button.on { color: var(--led); border-color: var(--led); }
+.periods button:focus-visible { outline: 2px solid var(--led); outline-offset: 1px; }
+.stats li.none { display: block; color: var(--dim); font-size: 12px; }
+.input.grow { flex: 1 1 280px; }
+
+/* Kişiler: edit panel opens under the row that was clicked */
+.table tr.editing td { background: color-mix(in srgb, var(--led) 10%, transparent); }
+.table tr.edit-row > td { padding: 4px 0 14px; border-top: 0; }
+.table tr.edit-row .group.editor { max-width: none; border-color: var(--led); box-shadow: 0 0 0 1px color-mix(in srgb, var(--led) 40%, transparent); }
+.name-btn { background: none; border: 0; padding: 0; color: inherit; font: inherit; cursor: pointer; text-align: left; display: inline-flex; align-items: center; gap: 4px; }
+.name-btn:hover { color: var(--led); }
+.name-btn:focus-visible { outline: 2px solid var(--led); outline-offset: 2px; border-radius: 4px; }
+.btn.small.on { border-color: var(--led); color: var(--led); }
+.group > .tabs { margin-left: 0; justify-content: flex-start; }

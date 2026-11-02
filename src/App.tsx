@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { backendReady, errorText, tr, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Snapshot } from "./api";
+import { backendReady, ENGINE_LABEL, errorText, tr, vivid, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Ranked, type Snapshot, type StatsPeriod, type TtsStatus } from "./api";
 import { BreaksScreen, HistoryScreen, PeopleScreen, SettingsScreen } from "./screens";
 
 type Page = "anons" | "mola" | "gecmis" | "kisiler" | "ayarlar";
@@ -12,7 +12,7 @@ const PAD_COLORS = 6;
 const hhmm = (at: string) => at.slice(11, 16);
 
 function padColor(p: Person) {
-  if (p.color) return p.color;
+  if (p.color) return vivid(p.color);
   const sum = [...p.name].reduce((a, ch) => a + ch.charCodeAt(0), 0);
   return `var(--pad-${(sum % PAD_COLORS) + 1})`;
 }
@@ -101,12 +101,12 @@ export default function App() {
           <Master player={player} clock={clock} nextBreak={nextBreak} onStop={stop} mode={data.settings.netMode} />
           <Mic api={api} data={data} toast={showToast} onSaved={() => refresh(api)} />
           <Deck api={api} categories={data.categories} people={data.people} player={player} toast={showToast} />
-          <Side data={data} />
+          <Side api={api} data={data} />
         </>
       ) : page === "mola" ? (
-        <BreaksScreen api={api} breaks={data.breaks} toast={showToast} />
+        <BreaksScreen api={api} breaks={data.breaks} mode={data.settings.netMode} toast={showToast} />
       ) : page === "gecmis" ? (
-        <HistoryScreen history={data.history} />
+        <HistoryScreen api={api} history={data.history} />
       ) : page === "kisiler" ? (
         <PeopleScreen api={api} categories={data.categories} people={data.people} toast={showToast} />
       ) : (
@@ -221,16 +221,63 @@ function VuMeter({ level }: { level: number }) {
   return <div className="vu"><canvas ref={ref} width={128} height={220} aria-hidden="true" /><small>SEVİYE</small></div>;
 }
 
+/** Which engine will read the next announcement, and whether it is ready. */
+function EngineBadge({ status, choice }: { status: TtsStatus | null; choice: Snapshot["settings"]["ttsEngine"] }) {
+  if (!status) return <div className="engine"><span className="e1"><span className="dot off" />Motor</span><span className="e2">Kontrol ediliyor</span></div>;
+  const emaReady = status.ema === "hazir";
+  const piperReady = status.piper === "hazir";
+  let name: string, dot: string, line: string;
+  if (choice === "piper" || (!emaReady && status.ema !== "yukleniyor")) {
+    name = "Piper"; dot = piperReady ? "" : "off";
+    line = choice === "piper" ? "Ayarlardan seçildi" : piperReady ? "Yedek motor devrede" : "Anons motoru bulunamadı";
+  } else if (status.ema === "yukleniyor") {
+    name = "ema-lightning"; dot = "wait";
+    line = piperReady ? "Yükleniyor · bu arada Piper okur" : "Yükleniyor";
+  } else {
+    name = "ema-lightning"; dot = "";
+    line = piperReady ? "Hazır · yedek: Piper" : "Hazır";
+  }
+  const last = status.lastEngine ? `Son anons: ${ENGINE_LABEL[status.lastEngine]}` : "";
+  const title = [status.emaError && `ema-lightning: ${status.emaError}`, status.lastNote, last].filter(Boolean).join("\n");
+  return (
+    <div className="engine" title={title || undefined}>
+      <span className="e1"><span className={`dot ${dot}`} />{name}</span>
+      <span className="e2">{line}</span>
+    </div>
+  );
+}
+
 function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toast: Toast; onSaved: () => void }) {
   const [text, setText] = useState("");
   const [gain, setGain] = useState(data.settings.ttsGain);
   const [rate, setRate] = useState(data.settings.ttsRate);
   const [vol, setVol] = useState(Math.round(data.settings.volume * 100));
+  const [busy, setBusy] = useState(false);
+  const [status, setStatus] = useState<TtsStatus | null>(null);
+
+  useEffect(() => {
+    let alive = true;
+    const load = () => api.ttsStatus().then((s) => alive && setStatus(s), () => {});
+    load();
+    const t = window.setInterval(load, 4000);
+    return () => { alive = false; window.clearInterval(t); };
+  }, [api]);
 
   const speak = async () => {
     const t = text.trim();
     if (!t) return toast("Önce okunacak metni yazın");
-    try { await api.speak(t); setText(""); } catch (e) { toast(errorText(e), true); }
+    if (busy) return;
+    setBusy(true);
+    try {
+      const r = await api.speak(t);
+      setText("");
+      if (r.note) toast(r.note, r.engine === "piper" && !r.note.startsWith("Sunucuya"));
+      api.ttsStatus().then(setStatus, () => {});
+    } catch (e) {
+      toast(errorText(e), true);
+    } finally {
+      setBusy(false);
+    }
   };
   const save = (key: "tts_gain" | "tts_rate", v: number) => api.setSetting(key, String(v)).then(onSaved, (e) => toast(errorText(e), true));
 
@@ -244,7 +291,7 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
         <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && speak()}
           placeholder="Okunacak metni yazın, Enter'a basın" autoComplete="off" />
       </label>
-      <button className="speak" onClick={speak}>SESLENDİR</button>
+      <button className="speak" onClick={speak} disabled={busy}>{busy ? "HAZIRLANIYOR" : "SESLENDİR"}</button>
       <div className="mic-opts">
         <label className="ctl">Güç
           <input type="range" min={1} max={15} step={0.5} value={gain} onChange={(e) => setGain(+e.target.value)}
@@ -261,10 +308,7 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
             onChange={(e) => { setVol(+e.target.value); api.setSetting("volume", String(+e.target.value / 100)); }} />
           <b>{vol}</b>
         </label>
-        <div className="engine" title="Canlı anons motorları bir sonraki adımda bağlanacak">
-          <span className="e1"><span className="dot" />ema-lightning</span>
-          <span className="e2">Ana motor · yedek: Piper · yakında</span>
-        </div>
+        <EngineBadge status={status} choice={data.settings.ttsEngine} />
       </div>
     </section>
   );
@@ -305,8 +349,9 @@ function Deck({ api, categories, people, player, toast }: {
   const call = async (p: Person) => {
     if (isPlaying(p)) return toast(`${p.name} zaten yayında`);
     try {
-      await api.callPerson(p.id);
-      if (player.current) toast(`${p.name} sıraya alındı`);
+      const note = await api.callPerson(p.id);
+      if (note) toast(note);
+      else if (player.current) toast(`${p.name} sıraya alındı`);
     } catch (e) { toast(errorText(e), true); }
   };
 
@@ -376,19 +421,37 @@ function Deck({ api, categories, people, player, toast }: {
   );
 }
 
-function Side({ data }: { data: Snapshot }) {
-  const top = [...data.people].sort((a, b) => b.count - a.count || tr.sort(a.name, b.name)).slice(0, 5);
+const PERIODS: [StatsPeriod, string][] = [["bugun", "Bugün"], ["hafta", "Hafta"], ["ay", "Ay"], ["tumu", "Tümü"]];
+
+function Side({ api, data }: { api: Backend; data: Snapshot }) {
+  const [period, setPeriod] = useState<StatsPeriod>("tumu");
+  const [ranked, setRanked] = useState<Ranked[] | null>(null);
+  useEffect(() => {
+    if (period === "tumu") return setRanked(null);
+    let alive = true;
+    api.stats(period).then((r) => alive && setRanked(r), () => alive && setRanked([]));
+    return () => { alive = false; };
+  }, [api, period, data.history]);
+  const top: { key: string | number; name: string; count: number }[] = ranked
+    ? ranked.map((r) => ({ key: r.personId ?? r.name, name: r.name, count: r.count }))
+    : [...data.people].sort((a, b) => b.count - a.count || tr.sort(a.name, b.name)).slice(0, 5).map((p) => ({ key: p.id, name: p.name, count: p.count }));
   const max = top[0]?.count || 1;
-  const total = data.people.reduce((a, p) => a + p.count, 0);
+  const total = ranked ? ranked.reduce((a, r) => a + r.count, 0) : data.people.reduce((a, p) => a + p.count, 0);
   const today = new Date().toLocaleDateString("sv-SE");
   const recent = data.history.filter((h) => h.at.startsWith(today)).slice(0, 12);
   return (
     <aside className="side">
       <section className="panel plate">
-        <h2>En çok çağrılanlar <span>toplam {total}</span></h2>
+        <h2>En çok çağrılanlar <span>{ranked ? "ilk 5" : "toplam"} {total}</span></h2>
+        <div className="periods" role="tablist" aria-label="Dönem">
+          {PERIODS.map(([k, l]) => (
+            <button key={k} role="tab" aria-selected={period === k} className={period === k ? "on" : ""} onClick={() => setPeriod(k)}>{l}</button>
+          ))}
+        </div>
         <ol className="stats">
+          {!top.length && <li className="none">Bu dönemde anons yok</li>}
           {top.map((p) => (
-            <li key={p.id}>
+            <li key={p.key}>
               <span className="sn">{tr.upper(p.name)}</span>
               <span className="track"><span className="fill" style={{ width: `${(p.count / max) * 100}%` }} /></span>
               <span className="sv">{p.count}</span>

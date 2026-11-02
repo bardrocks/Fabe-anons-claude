@@ -1124,7 +1124,7 @@ checksum = "af9673d8203fcb076b19dfd17e38b3d4ae9f44959416ea532ce72415a6020365"
 
 [[package]]
 name = "fabe-anons-v4"
-version = "4.0.0"
+version = "4.1.0"
 dependencies = [
  "anyhow",
  "chrono",

@@ -17,10 +17,24 @@ export interface Category { id: number; name: string; position: number; }
 export interface CallEntry { id: number; at: string; title: string; kind: string; source: string; }
 export interface BreakEntry { id: number; time: string; soundFile: string; label: string; }
 export type NetMode = "yerel" | "sunucu" | "istemci";
+export type TtsEngineChoice = "otomatik" | "ema" | "piper";
+export type TtsEngine = "ema" | "piper";
+export interface TtsStatus {
+  ema: "yok" | "kapali" | "yukleniyor" | "hazir" | "hata";
+  emaError: string | null;
+  piper: "yok" | "hazir";
+  lastEngine: TtsEngine | null;
+  lastNote: string | null;
+}
+export type StatsPeriod = "tumu" | "bugun" | "hafta" | "ay";
+export interface Ranked { personId: number | null; name: string; count: number; }
+export interface SpeakResult { engine: TtsEngine; note: string | null; }
+export const ENGINE_LABEL: Record<TtsEngine, string> = { ema: "ema-lightning", piper: "Piper" };
 export interface Settings {
   volume: number;
   ttsGain: number;
   ttsRate: number;
+  ttsEngine: TtsEngineChoice;
   chime: boolean;
   netMode: NetMode;
   netServerIp: string;
@@ -48,11 +62,12 @@ export interface RestoreReport {
   safetyBackup: string;
 }
 export interface BackupFile { path: string; name: string; created: string; size: number; }
+export interface ServerStatus { listening: boolean; port: number; error: string | null; clients: { name: string; ip: string; lastSeen: string }[]; }
 export interface Release { version: string; notes: string; url: string; sha256: string; }
 export interface UpdateProgress { step: string; done: number; total: number; }
 export interface PersonInput { name: string; category: string; color: string | null; soundFile: string | null; }
 export interface BreakInput { time: string; label: string; soundFile: string | null; }
-export type SettingKey = "volume" | "tts_gain" | "tts_rate" | "chime" | "net_mode" | "net_server_ip" | "net_port" | "pc_name";
+export type SettingKey = "volume" | "tts_gain" | "tts_rate" | "chime" | "net_mode" | "net_server_ip" | "net_port" | "pc_name" | "tts_engine";
 
 export interface Backend {
   snapshot(): Promise<Snapshot>;
@@ -76,8 +91,15 @@ export interface Backend {
   updateBreak(id: number, b: BreakInput): Promise<void>;
   deleteBreak(id: number): Promise<void>;
   // Playback
-  callPerson(id: number): Promise<void>;
-  speak(text: string): Promise<void>;
+  /** Returns a note to show (e.g. "Ayşe sunucuya gönderildi"), or "" when played here. */
+  callPerson(id: number): Promise<string>;
+  /** Reads the text twice with ema-lightning, or Piper if that fails. */
+  speak(text: string): Promise<SpeakResult>;
+  ttsStatus(): Promise<TtsStatus>;
+  /** Most-called names in the last day / 7 days / 30 days. */
+  stats(period: Exclude<StatsPeriod, "tumu">): Promise<Ranked[]>;
+  /** Latest 200 announcements, or those matching the search. */
+  searchHistory(query: string): Promise<CallEntry[]>;
   stopAll(): Promise<void>;
   setSetting(key: SettingKey, value: string): Promise<void>;
   // Backups
@@ -90,6 +112,7 @@ export interface Backend {
   // Network
   testConnection(ip: string, port: number): Promise<string>;
   localIps(): Promise<string[]>;
+  netStatus(): Promise<ServerStatus | null>;
   // Updates
   checkUpdate(): Promise<Release | null>;
   installUpdate(r: Release): Promise<void>;
@@ -100,7 +123,7 @@ export interface Backend {
 }
 
 const isTauri = typeof window !== "undefined" && "__TAURI_INTERNALS__" in window;
-const AUDIO = ["mp3", "wav", "ogg", "oga", "flac", "m4a", "aac", "mp4"];
+const AUDIO = ["mp3", "wav", "ogg", "oga", "opus", "flac", "m4a", "aac", "mp4", "webm", "amr", "wma", "3gp", "mpeg", "aiff"];
 
 async function tauriBackend(): Promise<Backend> {
   const { invoke } = await import("@tauri-apps/api/core");
@@ -135,6 +158,9 @@ async function tauriBackend(): Promise<Backend> {
     deleteBreak: (id) => invoke("delete_break", { id }),
     callPerson: (id) => invoke("call_person", { id }),
     speak: (text) => invoke("speak", { text }),
+    ttsStatus: () => invoke("tts_status"),
+    stats: (period) => invoke("stats", { period }),
+    searchHistory: (query) => invoke("search_history", { query }),
     stopAll: () => invoke("stop_all"),
     setSetting: (key, value) => invoke("set_setting", { key, value }),
     async createBackup() {
@@ -152,6 +178,7 @@ async function tauriBackend(): Promise<Backend> {
     showInFolder: (path) => revealItemInDir(path),
     testConnection: (ip, port) => invoke("test_connection", { ip, port }),
     localIps: () => invoke("local_ips"),
+    netStatus: () => invoke("net_status"),
     checkUpdate: () => invoke("check_update"),
     installUpdate: (release) => invoke("install_update", { release }),
     onPlayer: (cb) => sub("player", cb),
@@ -169,7 +196,7 @@ function mockBackend(): Backend {
   let categories: Category[] = ["Personeller", "Firmalar", "Depo"].map((name, i) => ({ id: i + 1, name, position: i + 1 }));
   let breaks: BreakEntry[] = [{ id: 1, time: "12:30", soundFile: "ogle-molasi.mp3", label: "Öğle molası" }, { id: 2, time: "19:12", soundFile: "mola1.mp3", label: "Mola" }];
   const history: CallEntry[] = [];
-  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.0.0" };
+  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.1.0" };
   const playerCbs = new Set<(s: PlayerState) => void>();
   const dataCbs = new Set<() => void>();
   const changed = () => dataCbs.forEach((cb) => cb());
@@ -256,8 +283,23 @@ function mockBackend(): Backend {
       history.unshift({ id: nextId, at: now(), title: p.name, kind: "person", source: "Bu bilgisayar" });
       enqueue(p.name, "person", "Bu bilgisayar", 2);
       changed();
+      return "";
     },
-    async speak() { throw "Canlı anons motoru bir sonraki sürümde bağlanacak"; },
+    async speak(text) {
+      history.unshift({ id: nextId++, at: now(), title: text, kind: "tts", source: "Bu bilgisayar" });
+      enqueue(text, "tts", "Bu bilgisayar", 2);
+      changed();
+      return { engine: "ema", note: null };
+    },
+    async stats(period) {
+      const n = period === "bugun" ? 1 : period === "hafta" ? 3 : 6;
+      return people.slice(0, 5).map((p, i) => ({ personId: p.id, name: p.name, count: Math.max(1, n * (5 - i)) }));
+    },
+    async searchHistory(query) {
+      const q = tr.lower(query.trim());
+      return history.filter((h) => !q || tr.lower(h.title).includes(q) || tr.lower(h.source).includes(q)).slice(0, 200);
+    },
+    async ttsStatus() { return { ema: "hazir", emaError: null, piper: "hazir", lastEngine: "ema", lastNote: null }; },
     async stopAll() { queue = []; window.clearInterval(timer); emit(idle); },
     async setSetting(key, value) {
       if (key === "volume") settings.volume = +value;
@@ -268,6 +310,7 @@ function mockBackend(): Backend {
       if (key === "net_server_ip") settings.netServerIp = value;
       if (key === "net_port") settings.netPort = +value;
       if (key === "pc_name") settings.pcName = value;
+      if (key === "tts_engine") settings.ttsEngine = value as TtsEngineChoice;
     },
     async createBackup() { return "C:\\Users\\kasa\\Desktop\\FABE_Anons_Yedek.zip"; },
     async restoreBackup() { return { kind: "eski", people: 37, sounds: 36, breaks: 1, missingSounds: ["ALUCH"], safetyBackup: "...\\yedekler\\FABE_Anons_Yedek_4.0.0_geri-yukleme-oncesi.zip" }; },
@@ -275,7 +318,8 @@ function mockBackend(): Backend {
     async showInFolder() {},
     async testConnection(ip) { if (!ip) throw "Önce sunucunun IP adresini yazın"; return "Bağlantı başarılı (4 ms)"; },
     async localIps() { return ["192.168.1.20"]; },
-    async checkUpdate() { return { version: "4.1.0", notes: "Canlı anons motoru eklendi.", url: "", sha256: "" }; },
+    async netStatus() { return settings.netMode === "sunucu" ? { listening: true, port: settings.netPort, error: null, clients: [{ name: "KASA-1", ip: "192.168.1.31", lastSeen: "14:05" }] } : null; },
+    async checkUpdate() { return { version: "4.2.0", notes: "Canlı anons motoru eklendi.", url: "", sha256: "" }; },
     async installUpdate() { throw "Tarayıcı önizlemesinde güncelleme yapılamaz"; },
     onPlayer: (cb) => { playerCbs.add(cb); return () => playerCbs.delete(cb); },
     onDataChanged: (cb) => { dataCbs.add(cb); return () => dataCbs.delete(cb); },
@@ -298,8 +342,29 @@ export const tr = {
 /** Colors offered for buttons (old app's palette plus the Konsol accents). */
 export const BUTTON_COLORS = [
   "#ffb02e", "#ff6fa8", "#ff3b30", "#8f7bff", "#5aa9ff", "#4fd1c5",
-  "#7ed957", "#2E7D32", "#1B5E20", "#FBC02D", "#E65100", "#6D4C41",
+  "#7ed957", "#22c55e", "#00e0ff", "#ffe14d", "#ff7a1a", "#d946ef",
 ];
+
+/**
+ * Makes a button color bright enough to stand out on the dark pads. Colors carried over from
+ * the old app are often dark (navy, dark green) and nearly disappear on a dark background.
+ */
+export function vivid(color: string): string {
+  const m = /^#?([0-9a-f]{6})$/i.exec(color.trim());
+  if (!m) return color;
+  const n = parseInt(m[1], 16);
+  const [r, g, b] = [(n >> 16) & 255, (n >> 8) & 255, n & 255].map((v) => v / 255);
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  let h = 0;
+  if (d) h = max === r ? ((g - b) / d) % 6 : max === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  h = (h * 60 + 360) % 360;
+  const l0 = (max + min) / 2;
+  const s0 = d ? d / (1 - Math.abs(2 * l0 - 1)) : 0;
+  // Greys stay grey (just lighter); real colors get full saturation and mid lightness.
+  const s = s0 < 0.12 ? s0 : Math.max(s0, 0.85);
+  const l = Math.min(Math.max(l0, 0.55), 0.68);
+  return `hsl(${Math.round(h)} ${Math.round(s * 100)}% ${Math.round(l * 100)}%)`;
+}
 
 // Last, so the helpers above exist before the mock uses them.
 export const backendReady: Promise<Backend> = isTauri ? tauriBackend() : Promise.resolve(mockBackend());

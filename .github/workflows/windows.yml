@@ -53,6 +53,56 @@ jobs:
         working-directory: src-tauri
         run: cargo test
 
+      # Her ses biçimini (WhatsApp .opus dahil) çevirebilmek için FFmpeg uygulamayla birlikte kurulur.
+      - name: FFmpeg indir
+        shell: pwsh
+        run: |
+          $url = "https://github.com/GyanD/codexffmpeg/releases/download/7.1/ffmpeg-7.1-essentials_build.zip"
+          Invoke-WebRequest $url -OutFile ffmpeg.zip
+          Expand-Archive ffmpeg.zip -DestinationPath ffmpeg-tmp
+          $exe = Get-ChildItem ffmpeg-tmp -Recurse -Filter ffmpeg.exe | Select-Object -First 1
+          Copy-Item $exe.FullName src-tauri/resources/ffmpeg.exe
+          & src-tauri/resources/ffmpeg.exe -hide_banner -version | Select-Object -First 1
+
+      # Canlı anons motoru: ema-lightning (ana) ayrı bir program olarak, modelleriyle birlikte.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: tts/requirements.txt
+
+      - name: Canlı anons motorunu derle (ema-lightning)
+        shell: pwsh
+        run: |
+          python -m pip install -r tts/requirements.txt
+          python tts/modelleri_indir.py src-tauri/resources/tts/models
+          pyinstaller --noconfirm --onedir --console --name fabe-tts --distpath src-tauri/resources/tts --workpath build-tts/work --specpath build-tts --collect-all normalizer_tr --collect-submodules ema_lightning --exclude-module tkinter tts/fabe_tts.py
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller başarısız" }
+          # Derleme için gereken ama çalışırken kullanılmayan büyük dosyaları at (kurulum küçülür).
+          $tts = "src-tauri/resources/tts/fabe-tts"
+          Get-ChildItem $tts -Recurse -File -Include *.lib,*.h,*.hpp,*.cuh,*.pdb,*.pyi | Remove-Item -Force
+          Get-ChildItem $tts -Recurse -Directory | Where-Object { $_.Name -eq "include" -and $_.FullName -match "torch" } | Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
+          $mb = [math]::Round((Get-ChildItem $tts -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+          Write-Host "ema-lightning motoru: $mb MB"
+          python tts/dene.py src-tauri/resources/tts/fabe-tts/fabe-tts.exe src-tauri/resources/tts/models
+          if ($LASTEXITCODE -ne 0) { throw "ema-lightning denemesi başarısız" }
+
+      # Yedek motor: Piper ve Türkçe ses.
+      - name: Yedek anons motorunu indir (Piper)
+        shell: pwsh
+        run: |
+          Invoke-WebRequest "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip" -OutFile piper.zip
+          Expand-Archive piper.zip -DestinationPath piper-tmp
+          New-Item -ItemType Directory -Force src-tauri/resources/piper | Out-Null
+          Copy-Item piper-tmp/piper/* src-tauri/resources/piper -Recurse -Force
+          $voice = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/tr/tr_TR/dfki/medium/tr_TR-dfki-medium.onnx"
+          Invoke-WebRequest $voice -OutFile src-tauri/resources/piper/tr_TR-dfki-medium.onnx
+          Invoke-WebRequest "$voice.json" -OutFile src-tauri/resources/piper/tr_TR-dfki-medium.onnx.json
+          "Mehmet Bey depoya" | & src-tauri/resources/piper/piper.exe --model src-tauri/resources/piper/tr_TR-dfki-medium.onnx --output_file piper-deneme.wav
+          $size = (Get-Item piper-deneme.wav).Length
+          Write-Host "Piper deneme: $size bayt"
+          if ($size -lt 20000) { throw "Piper denemesi başarısız" }
+
       - name: Kurulum dosyasını derle
         run: npx tauri build
 

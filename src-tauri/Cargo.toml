@@ -1,6 +1,6 @@
 [package]
 name = "fabe-anons-v4"
-version = "4.0.0"
+version = "4.1.0"
 description = "FABE Anons - mağaza anons sistemi"
 authors = ["bardrocks"]
 edition = "2024"

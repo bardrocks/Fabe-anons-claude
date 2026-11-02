@@ -1,0 +1,1 @@
+FFmpeg (ffmpeg.exe) Windows derlemesinde buraya indirilir; bkz. .github/workflows/windows.yml
