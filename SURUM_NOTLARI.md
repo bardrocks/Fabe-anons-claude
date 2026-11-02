@@ -1,0 +1,1 @@
+FABE Anons 4.0.0: Konsol ekranı, anons sırası (isimler 2 kez okunur, önce gong, müzik kısılır), anons butonları ve renkleri, kategoriler, mola saatleri, yedekleme ve geri yükleme, ağ ayarları, otomatik güncelleme. Eski uygulamanın verileri ilk açılışta aktarılır.
