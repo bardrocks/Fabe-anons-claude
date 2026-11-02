@@ -132,6 +132,22 @@ pub type Handler = Arc<dyn Fn(Incoming) -> Result<()> + Send + Sync>;
 pub struct Server {
     stop: Arc<AtomicBool>,
     status: Arc<Mutex<ServerStatus>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+/// Binds the port, retrying for a few seconds: right after a restart (settings saved) or an
+/// app restart, Windows can still hold the port for a moment.
+fn bind(port: u16) -> std::io::Result<TcpListener> {
+    let mut last = None;
+    for _ in 0..20 {
+        match TcpListener::bind(("0.0.0.0", port)) {
+            Ok(l) => return Ok(l),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => last = Some(e),
+            Err(e) => return Err(e),
+        }
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    Err(last.unwrap_or_else(|| std::io::Error::other("port açılamadı")))
 }
 
 impl Server {
@@ -141,13 +157,21 @@ impl Server {
         let stop = Arc::new(AtomicBool::new(false));
         let status = Arc::new(Mutex::new(ServerStatus { port, ..Default::default() }));
         let (stop2, status2) = (stop.clone(), status.clone());
-        std::thread::Builder::new()
+        let thread = std::thread::Builder::new()
             .name("fabe-server".into())
             .spawn(move || {
-                let listener = match TcpListener::bind(("0.0.0.0", port)) {
+                let listener = match bind(port) {
                     Ok(l) => l,
                     Err(e) => {
-                        let msg = format!("Port {port} açılamadı (başka bir program kullanıyor olabilir): {e}");
+                        let msg = if e.kind() == std::io::ErrorKind::AddrInUse {
+                            format!(
+                                "{port} numaralı port başka bir program tarafından kullanılıyor. Bu bilgisayarda eski FABE Anons \
+                                 (3.x) ya da bu uygulamanın ikinci bir kopyası açık olabilir: onu kapatıp uygulamayı yeniden \
+                                 başlatın. Gerekirse portu değiştirin (istemcilerde de aynı port yazılmalı)."
+                            )
+                        } else {
+                            format!("{port} numaralı port açılamadı: {e}")
+                        };
                         log::error!("{msg}");
                         status2.lock().unwrap().error = Some(msg);
                         return;
@@ -177,7 +201,7 @@ impl Server {
                 status2.lock().unwrap().listening = false;
             })
             .expect("server thread");
-        Self { stop, status }
+        Self { stop, status, thread: Some(thread) }
     }
 
     pub fn status(&self) -> ServerStatus {
@@ -186,8 +210,13 @@ impl Server {
 }
 
 impl Drop for Server {
+    /// Waits until the port is really closed, so a server started right after (new
+    /// settings) can open the same port.
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
+        if let Some(t) = self.thread.take() {
+            let _ = t.join();
+        }
     }
 }
 
@@ -449,6 +478,28 @@ mod tests {
 
         drop(server);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn restarting_on_the_same_port_works() {
+        let dir = std::env::temp_dir().join(format!("fabe-net-restart-{}", std::process::id()));
+        let handler: Handler = Arc::new(|_| Ok(()));
+        let port = 40000 + ((std::process::id() + 7) % 20000) as u16;
+        let start = || Server::start(port, "S".into(), dir.clone(), dir.clone(), handler.clone());
+        let mut server = start();
+        std::thread::sleep(Duration::from_millis(200));
+        assert!(server.status().listening);
+        for _ in 0..3 {
+            drop(server); // saving network settings restarts the server
+            server = start();
+            std::thread::sleep(Duration::from_millis(200));
+            let st = server.status();
+            assert!(st.listening, "{:?}", st.error);
+        }
+        // A second server on a port in use reports it clearly (after its retries).
+        let other = start();
+        std::thread::sleep(Duration::from_millis(5500));
+        assert!(other.status().error.unwrap().contains("başka bir program"));
     }
 
     #[test]
