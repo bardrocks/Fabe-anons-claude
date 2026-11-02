@@ -1,0 +1,44 @@
+name: Windows derlemesi
+
+on:
+  push:
+    branches: [main, "claude/**"]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Paketleri kur
+        run: npm ci
+
+      - name: Arayüz tür denetimi
+        run: npx tsc --noEmit
+
+      - name: Rust testleri
+        working-directory: src-tauri
+        run: cargo test
+
+      - name: Kurulum dosyasını derle
+        run: npx tauri build
+
+      - name: Kurulum dosyasını yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: FABE-Anons-kurulum
+          path: src-tauri/target/release/bundle/nsis/*.exe
+          if-no-files-found: error

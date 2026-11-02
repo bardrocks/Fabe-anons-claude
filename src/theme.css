@@ -1,0 +1,66 @@
+/*
+ * FABE Anons - tema.
+ * Bütün renkler ve yazı tipleri burada. Başka bir tema için yalnızca bu dosyayı değiştirmek yeterli.
+ * Tema: "Konsol" (koyu mikser masası, amber LED tabela).
+ */
+@import "@fontsource/doto/700.css";
+@import "@fontsource/doto/900.css";
+@import "@fontsource/onest/400.css";
+@import "@fontsource/onest/500.css";
+@import "@fontsource/onest/600.css";
+@import "@fontsource/onest/700.css";
+@import "@fontsource/space-mono/400.css";
+@import "@fontsource/space-mono/700.css";
+
+:root {
+  /* Kasa ve paneller */
+  --chassis: #121314;
+  --plate: #1a1b1d;
+  --plate-2: #222326;
+  --groove: #0b0b0c;
+  --edge: #2c2d31;
+  --key-top: #2a2b2f;
+  --key-bottom: #1f2023;
+  --key-shadow: #0b0b0c;
+
+  /* Yazı */
+  --text: #e9e7e2;
+  --dim: #85847f;
+
+  /* LED tabela ve vurgular */
+  --led: #ffb02e;
+  --led-off: #3a2a10;
+  --led-dim: rgba(255, 176, 46, 0.12);
+  --led-glow: rgba(255, 176, 46, 0.55);
+  --sign-bg: #050505;
+
+  /* Durumlar */
+  --rec: #ff3b30;
+  --rec-top: #ff5a4f;
+  --rec-bottom: #d42a20;
+  --rec-shadow: #8f1a13;
+  --ok: #43d17a;
+  --speak-top: #ffc35c;
+  --speak-bottom: #f39a12;
+  --speak-shadow: #9a5f06;
+  --speak-text: #1a1204;
+
+  /* Kişi rengi verilmemiş pedlerin renk paleti (isimden seçilir) */
+  --pad-1: #ffb02e;
+  --pad-2: #4fd1c5;
+  --pad-3: #ff6fa8;
+  --pad-4: #8f7bff;
+  --pad-5: #7ed957;
+  --pad-6: #5aa9ff;
+
+  /* Yazı tipleri */
+  --f-led: "Doto", "Space Mono", monospace;
+  --f-body: "Onest", "Segoe UI", system-ui, sans-serif;
+  --f-mono: "Space Mono", Consolas, monospace;
+
+  /* Pad boyutu */
+  --pad-min-width: 132px;
+  --pad-min-height: 74px;
+
+  color-scheme: dark;
+}
