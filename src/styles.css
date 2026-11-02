@@ -269,3 +269,16 @@ input[type=time].input { color-scheme: dark; font-family: var(--f-mono); font-si
 .name-btn:focus-visible { outline: 2px solid var(--led); outline-offset: 2px; border-radius: 4px; }
 .btn.small.on { border-color: var(--led); color: var(--led); }
 .group > .tabs { margin-left: 0; justify-content: flex-start; }
+
+/* Drag and drop on the pads */
+.card[draggable="true"] { cursor: grab; }
+.card.dragging { opacity: .4; }
+.card.drop-target { box-shadow: 0 3px 0 #0c0c0d, 0 0 0 2px var(--led), 0 0 18px var(--led-dim); }
+
+/* Live announcement: text stays after reading; TEMİZLE clears it */
+.mic-input { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.mic-input input { flex: 1; }
+.mic-input .clear { flex: none; background: var(--chassis); border: 1px solid var(--edge); border-radius: 7px; color: var(--dim);
+  font: 600 11px var(--f-mono); letter-spacing: .1em; padding: 5px 9px; cursor: pointer; }
+.mic-input .clear:hover { color: var(--text); border-color: var(--dim); }
+.mic-input .clear:focus-visible { outline: 2px solid var(--led); outline-offset: 1px; }

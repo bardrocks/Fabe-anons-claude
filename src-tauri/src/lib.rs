@@ -272,6 +272,14 @@ fn stats(period: String, app: AppState) -> Result<Vec<db::Ranked>, String> {
     app.store.top_called(&since, 5).map_err(err)
 }
 
+/// Drag and drop on the main screen: saves the new order of the buttons.
+#[tauri::command]
+fn reorder_people(ids: Vec<i64>, app: AppState, handle: tauri::AppHandle) -> Result<(), String> {
+    app.store.reorder_people(&ids).map_err(err)?;
+    changed(&handle);
+    Ok(())
+}
+
 /// Lower-cases the Turkish way (I → ı, İ → i) so searches match what people type.
 fn tr_lower(s: &str) -> String {
     s.replace('I', "ı").replace('İ', "i").to_lowercase()
@@ -753,6 +761,7 @@ pub fn run() {
             tts_status,
             stats,
             search_history,
+            reorder_people,
             import_old_backup,
             create_backup,
             restore_backup,

@@ -22,6 +22,8 @@ pub struct Person {
     /// Calls counted by the old app before migration plus calls logged since.
     pub count: i64,
     pub today: i64,
+    /// Place on the main screen set by drag and drop; None = alphabetical after the ordered ones.
+    pub position: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -67,7 +69,8 @@ CREATE TABLE IF NOT EXISTS people (
     color       TEXT,
     sound_file  TEXT,
     legacy_calls INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime'))
+    created_at  TEXT NOT NULL DEFAULT (datetime('now','localtime')),
+    position    INTEGER                 -- order on the main screen (drag and drop); NULL = alphabetical, after the ordered ones
 );
 CREATE TABLE IF NOT EXISTS calls (
     id        INTEGER PRIMARY KEY,
@@ -98,11 +101,23 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 "#;
 
+/// Creates missing tables and adds columns that newer versions expect to an older database.
+fn upgrade(conn: &Connection) -> Result<()> {
+    conn.execute_batch(SCHEMA)?;
+    let has_position = conn
+        .prepare("SELECT 1 FROM pragma_table_info('people') WHERE name = 'position'")?
+        .exists([])?;
+    if !has_position {
+        conn.execute_batch("ALTER TABLE people ADD COLUMN position INTEGER;")?;
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
         let conn = Connection::open(path)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")?;
-        conn.execute_batch(SCHEMA)?;
+        upgrade(&conn)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -114,7 +129,7 @@ impl Store {
     #[cfg(test)]
     pub fn memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
-        conn.execute_batch(SCHEMA)?;
+        upgrade(&conn)?;
         Ok(Self { conn: Mutex::new(conn) })
     }
 
@@ -309,7 +324,7 @@ impl Store {
         drop(check);
         let mut c = self.c();
         c.restore(rusqlite::DatabaseName::Main, src, None::<fn(rusqlite::backup::Progress)>)?;
-        c.execute_batch(SCHEMA)?; // adds tables a newer version expects
+        upgrade(&c)?; // adds tables and columns a newer version expects
         Ok(())
     }
 
@@ -318,7 +333,8 @@ impl Store {
         let mut st = c.prepare(
             "SELECT p.id, p.name, p.category, p.color, p.sound_file,
                     p.legacy_calls + (SELECT COUNT(*) FROM calls WHERE person_id = p.id),
-                    (SELECT COUNT(*) FROM calls WHERE person_id = p.id AND date(at) = date('now','localtime'))
+                    (SELECT COUNT(*) FROM calls WHERE person_id = p.id AND date(at) = date('now','localtime')),
+                    p.position
              FROM people p",
         )?;
         let rows = st.query_map([], |r| {
@@ -330,9 +346,21 @@ impl Store {
                 sound_file: r.get(4)?,
                 count: r.get(5)?,
                 today: r.get(6)?,
+                position: r.get(7)?,
             })
         })?;
         Ok(rows.collect::<std::result::Result<_, _>>()?)
+    }
+
+    /// Saves the order of buttons after a drag and drop: `ids[0]` comes first.
+    pub fn reorder_people(&self, ids: &[i64]) -> Result<()> {
+        let mut c = self.c();
+        let tx = c.transaction()?;
+        for (i, id) in ids.iter().enumerate() {
+            tx.execute("UPDATE people SET position = ?1 WHERE id = ?2", params![i as i64, id])?;
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn person(&self, id: i64) -> Result<Option<Person>> {
@@ -430,6 +458,24 @@ mod tests {
         assert_eq!(p.count, 11);
         assert_eq!(p.today, 1);
         assert_eq!(s.history(5).unwrap()[0].title, "Ayşe");
+    }
+
+    #[test]
+    fn order_is_saved_and_old_databases_get_the_column() {
+        let s = Store::memory().unwrap();
+        let a = s.add_person("Ayşe", "Personeller", None, Some("a.mp3"), 0).unwrap();
+        let b = s.add_person("Eren", "Personeller", None, Some("e.mp3"), 0).unwrap();
+        s.reorder_people(&[b, a]).unwrap();
+        let pos = |id| s.person(id).unwrap().unwrap().position;
+        assert_eq!((pos(b), pos(a)), (Some(0), Some(1)));
+
+        // A 4.0 database has no position column.
+        let old = Connection::open_in_memory().unwrap();
+        old.execute_batch(&SCHEMA.replace(",\n    position    INTEGER", "")).unwrap();
+        old.execute_batch("ALTER TABLE people DROP COLUMN position;").ok();
+        upgrade(&old).unwrap();
+        upgrade(&old).unwrap(); // twice is fine
+        assert!(old.prepare("SELECT position FROM people").is_ok());
     }
 
     #[test]

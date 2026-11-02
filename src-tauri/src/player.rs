@@ -7,7 +7,7 @@
 use crate::ducking::Ducker;
 use anyhow::{Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use rodio::{buffer::SamplesBuffer, Decoder, OutputStream, Sink, Source};
+use rodio::{buffer::SamplesBuffer, source::UniformSourceIterator, Decoder, OutputStream, Sink, Source};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -16,6 +16,11 @@ use std::time::{Duration, Instant};
 
 /// Gap between the two readings of a name.
 const REPEAT_GAP: Duration = Duration::from_millis(1000);
+/// Every clip is converted to this one format before it reaches the sound card. Switching
+/// sample rates between clips (gong 44.1 kHz, Piper 22.05 kHz...) garbled the start of the
+/// next clip on some PCs.
+const OUT_RATE: u32 = 48_000;
+const OUT_CHANNELS: u16 = 2;
 const TICK: Duration = Duration::from_millis(50);
 
 #[derive(Debug, Clone, Copy, Serialize, PartialEq)]
@@ -129,10 +134,30 @@ impl Clip {
         let f = std::fs::File::open(path).with_context(|| format!("{} açılamadı", path.display()))?;
         let dec = Decoder::new(std::io::BufReader::new(f))
             .with_context(|| format!("{} çözülemedi (desteklenmeyen biçim olabilir)", path.display()))?;
-        let channels = dec.channels();
-        let rate = dec.sample_rate();
-        let samples: Vec<f32> = dec.convert_samples::<f32>().collect();
-        Ok(Self { channels, rate, samples })
+        let samples: Vec<f32> = UniformSourceIterator::<_, f32>::new(dec.convert_samples::<f32>(), OUT_CHANNELS, OUT_RATE).collect();
+        Ok(Self { channels: OUT_CHANNELS, rate: OUT_RATE, samples })
+    }
+
+    /// Converts samples in any format to the one the player uses.
+    fn uniform(channels: u16, rate: u32, samples: Vec<f32>) -> Self {
+        let src = SamplesBuffer::new(channels, rate, samples);
+        let samples = UniformSourceIterator::<_, f32>::new(src, OUT_CHANNELS, OUT_RATE).collect();
+        Self { channels: OUT_CHANNELS, rate: OUT_RATE, samples }
+    }
+
+    /// Adds silence before the clip and a 15 ms fade-in, so speech that starts on the very
+    /// first sample (Piper does) is not clipped or clicks while the sound card wakes up.
+    pub fn with_lead_in(mut self, lead: Duration) -> Self {
+        let ch = self.channels as usize;
+        let fade = (self.rate as usize * 15 / 1000) * ch;
+        for (i, s) in self.samples.iter_mut().take(fade).enumerate() {
+            *s *= (i / ch) as f32 / (fade / ch).max(1) as f32;
+        }
+        let pad = (lead.as_secs_f64() * self.rate as f64) as usize * ch;
+        let mut out = vec![0.0; pad];
+        out.extend_from_slice(&self.samples);
+        self.samples = out;
+        self
     }
 
     pub fn duration(&self) -> Duration {
@@ -171,7 +196,7 @@ impl Clip {
             (2.0 * std::f32::consts::PI * f * t).sin() * env
         };
         let samples = (0..len).map(|i| 0.32 * (tone(659.25, 0.0, i) + tone(523.25, 0.45, i))).collect();
-        Self { channels: 1, rate, samples }
+        Self::uniform(1, rate, samples)
     }
 }
 
@@ -249,6 +274,7 @@ impl Engine {
                 continue;
             };
             let clip = match Clip::load(&item.file) {
+                Ok(c) if item.kind == Kind::Tts => c.with_gain(item.gain).with_lead_in(Duration::from_millis(150)),
                 Ok(c) => c.with_gain(item.gain),
                 Err(e) => {
                     log::error!("{e:#}");
@@ -344,6 +370,51 @@ mod tests {
         assert!((c.duration().as_secs_f32() - 1.5).abs() < 0.01);
         assert!(c.samples.iter().all(|s| s.abs() <= 1.0));
         assert!(c.level_at(Duration::from_millis(100)) > 0.1);
+    }
+
+    /// A 16-bit mono WAV like Piper writes (22.05 kHz).
+    fn wav(rate: u32, samples: &[i16]) -> Vec<u8> {
+        let data = samples.len() as u32 * 2;
+        let mut v = Vec::new();
+        v.extend_from_slice(b"RIFF");
+        v.extend_from_slice(&(36 + data).to_le_bytes());
+        v.extend_from_slice(b"WAVEfmt ");
+        v.extend_from_slice(&16u32.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&1u16.to_le_bytes());
+        v.extend_from_slice(&rate.to_le_bytes());
+        v.extend_from_slice(&(rate * 2).to_le_bytes());
+        v.extend_from_slice(&2u16.to_le_bytes());
+        v.extend_from_slice(&16u16.to_le_bytes());
+        v.extend_from_slice(b"data");
+        v.extend_from_slice(&data.to_le_bytes());
+        for s in samples {
+            v.extend_from_slice(&s.to_le_bytes());
+        }
+        v
+    }
+
+    #[test]
+    fn every_clip_reaches_the_card_in_one_format() {
+        let dir = std::env::temp_dir().join(format!("fabe-player-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("piper.wav");
+        // 1 s of loud tone starting on the very first sample.
+        let tone: Vec<i16> = (0..22_050).map(|i| ((i as f32 * 0.1).sin() * 20_000.0) as i16).collect();
+        std::fs::write(&path, wav(22_050, &tone)).unwrap();
+        let c = Clip::load(&path).unwrap();
+        assert_eq!((c.channels, c.rate), (OUT_CHANNELS, OUT_RATE));
+        assert!((c.duration().as_secs_f32() - 1.0).abs() < 0.01);
+        let chime = Clip::chime();
+        assert_eq!((chime.channels, chime.rate), (OUT_CHANNELS, OUT_RATE));
+
+        let led = c.clone().with_lead_in(Duration::from_millis(150));
+        assert!((led.duration().as_secs_f32() - 1.15).abs() < 0.01);
+        let pad = (0.15 * OUT_RATE as f32) as usize * OUT_CHANNELS as usize;
+        assert!(led.samples[..pad].iter().all(|s| *s == 0.0));
+        // Fades in instead of starting at full level.
+        assert!(led.samples[pad..pad + 20].iter().all(|s| s.abs() < 0.05));
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]
