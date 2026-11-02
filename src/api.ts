@@ -12,6 +12,8 @@ export interface Person {
   soundFile: string | null;
   count: number;
   today: number;
+  /** Place on the main screen set by drag and drop; null = alphabetical, after the ordered ones. */
+  position: number | null;
 }
 export interface Category { id: number; name: string; position: number; }
 export interface CallEntry { id: number; at: string; title: string; kind: string; source: string; }
@@ -82,6 +84,8 @@ export interface Backend {
   createPerson(p: PersonInput & { soundFile: string }): Promise<number>;
   updatePerson(id: number, p: PersonInput): Promise<void>;
   deletePerson(id: number): Promise<void>;
+  /** Saves the button order after a drag and drop (first id comes first). */
+  reorderPeople(ids: number[]): Promise<void>;
   // Sounds
   /** Opens a file picker, copies the chosen audio into the app. null if cancelled. */
   pickSound(nameHint: string): Promise<string | null>;
@@ -157,6 +161,7 @@ async function tauriBackend(): Promise<Backend> {
     updateBreak: (id, b) => invoke("update_break", { id, ...b }),
     deleteBreak: (id) => invoke("delete_break", { id }),
     callPerson: (id) => invoke("call_person", { id }),
+    reorderPeople: (ids) => invoke("reorder_people", { ids }),
     speak: (text) => invoke("speak", { text }),
     ttsStatus: () => invoke("tts_status"),
     stats: (period) => invoke("stats", { period }),
@@ -190,13 +195,13 @@ async function tauriBackend(): Promise<Backend> {
 function mockBackend(): Backend {
   const names = ["Artemis", "Asem", "Ayşe", "Aysel", "Dilek", "Elena", "Erdinç", "Eren", "Fatih", "Fatma", "İbrahim", "Leyla", "Mihriban", "Münevver", "Nina", "Şirin", "Vika", "Burak", "Kaan"];
   const people: Person[] = names.map((name, i) => ({
-    id: i + 1, name, category: i > 16 ? "Depo" : "Personeller", color: name === "Nina" ? "#2E7D32" : null, soundFile: `${tr.lower(name)}.mp3`, count: (i * 7) % 11, today: 0,
+    id: i + 1, name, category: i > 16 ? "Depo" : "Personeller", color: name === "Nina" ? "#2E7D32" : null, soundFile: `${tr.lower(name)}.mp3`, count: (i * 7) % 11, today: 0, position: null,
   }));
-  people.push({ id: 99, name: "ALUCH", category: "Firmalar", color: null, soundFile: "aluch.mp3", count: 2, today: 0 });
+  people.push({ id: 99, name: "ALUCH", category: "Firmalar", color: null, soundFile: "aluch.mp3", count: 2, today: 0, position: null });
   let categories: Category[] = ["Personeller", "Firmalar", "Depo"].map((name, i) => ({ id: i + 1, name, position: i + 1 }));
   let breaks: BreakEntry[] = [{ id: 1, time: "12:30", soundFile: "ogle-molasi.mp3", label: "Öğle molası" }, { id: 2, time: "19:12", soundFile: "mola1.mp3", label: "Mola" }];
   const history: CallEntry[] = [];
-  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.1.0" };
+  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.2.0" };
   const playerCbs = new Set<(s: PlayerState) => void>();
   const dataCbs = new Set<() => void>();
   const changed = () => dataCbs.forEach((cb) => cb());
@@ -262,7 +267,7 @@ function mockBackend(): Backend {
     async createPerson(p) {
       if (people.some((x) => x.name === p.name.trim())) throw `"${p.name}" adında biri zaten var`;
       const id = nextId++;
-      people.push({ id, name: p.name.trim(), category: p.category, color: p.color, soundFile: p.soundFile, count: 0, today: 0 });
+      people.push({ id, name: p.name.trim(), category: p.category, color: p.color, soundFile: p.soundFile, count: 0, today: 0, position: null });
       changed();
       return id;
     },
@@ -271,6 +276,7 @@ function mockBackend(): Backend {
       Object.assign(x, { name: p.name.trim(), category: p.category, color: p.color, soundFile: p.soundFile ?? x.soundFile });
       changed();
     },
+    async reorderPeople(ids) { ids.forEach((id, i) => { const p = people.find((x) => x.id === id); if (p) p.position = i; }); changed(); },
     async deletePerson(id) { people.splice(people.findIndex((p) => p.id === id), 1); changed(); },
     async pickSound(hint) { return `${tr.lower(hint || "ses")}-${Date.now()}.mp3`; },
     async previewSound() { enqueue("Deneme", "break", "Dinleme", 1); },
@@ -319,7 +325,7 @@ function mockBackend(): Backend {
     async testConnection(ip) { if (!ip) throw "Önce sunucunun IP adresini yazın"; return "Bağlantı başarılı (4 ms)"; },
     async localIps() { return ["192.168.1.20"]; },
     async netStatus() { return settings.netMode === "sunucu" ? { listening: true, port: settings.netPort, error: null, clients: [{ name: "KASA-1", ip: "192.168.1.31", lastSeen: "14:05" }] } : null; },
-    async checkUpdate() { return { version: "4.2.0", notes: "Canlı anons motoru eklendi.", url: "", sha256: "" }; },
+    async checkUpdate() { return { version: "4.3.0", notes: "Canlı anons motoru eklendi.", url: "", sha256: "" }; },
     async installUpdate() { throw "Tarayıcı önizlemesinde güncelleme yapılamaz"; },
     onPlayer: (cb) => { playerCbs.add(cb); return () => playerCbs.delete(cb); },
     onDataChanged: (cb) => { dataCbs.add(cb); return () => dataCbs.delete(cb); },

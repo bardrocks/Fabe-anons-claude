@@ -254,6 +254,7 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
   const [vol, setVol] = useState(Math.round(data.settings.volume * 100));
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState<TtsStatus | null>(null);
+  const textRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     let alive = true;
@@ -270,7 +271,6 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
     setBusy(true);
     try {
       const r = await api.speak(t);
-      setText("");
       if (r.note) toast(r.note, r.engine === "piper" && !r.note.startsWith("Sunucuya"));
       api.ttsStatus().then(setStatus, () => {});
     } catch (e) {
@@ -288,8 +288,14 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
       </div>
       <label className="mic-field">
         <span>Canlı anons</span>
-        <input value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && speak()}
-          placeholder="Okunacak metni yazın, Enter'a basın" autoComplete="off" />
+        <span className="mic-input">
+          <input ref={textRef} value={text} onChange={(e) => setText(e.target.value)} onKeyDown={(e) => e.key === "Enter" && speak()}
+            placeholder="Okunacak metni yazın, Enter'a basın" autoComplete="off" />
+          {text && (
+            <button type="button" className="clear" title="Metni temizle"
+              onClick={(e) => { e.preventDefault(); setText(""); textRef.current?.focus(); }}>TEMİZLE</button>
+          )}
+        </span>
       </label>
       <button className="speak" onClick={speak} disabled={busy}>{busy ? "HAZIRLANIYOR" : "SESLENDİR"}</button>
       <div className="mic-opts">
@@ -341,9 +347,29 @@ function Deck({ api, categories, people, player, toast }: {
   }, [categories, people]);
   const inCat = (p: Person, c: string) => tr.lower(p.category) === tr.lower(c);
 
-  const sorted = useMemo(() => [...people].sort((a, b) => tr.sort(a.name, b.name)), [people]);
+  // Buttons the user arranged by drag and drop come first, in their order; the rest alphabetically.
+  const sorted = useMemo(() => [...people].sort((a, b) =>
+    (a.position ?? Infinity) - (b.position ?? Infinity) || tr.sort(a.name, b.name)), [people]);
   const needle = tr.lower(q.trim());
   const list = sorted.filter((p) => (tab === "all" || inCat(p, tab)) && (!needle || tr.lower(p.name).includes(needle)));
+
+  // Drag and drop: a button can be moved within its own category (not while searching).
+  const [dragId, setDragId] = useState<number | null>(null);
+  const [overId, setOverId] = useState<number | null>(null);
+  const canDrag = !needle;
+  const drop = async (target: Person) => {
+    const moving = people.find((p) => p.id === dragId);
+    setDragId(null);
+    setOverId(null);
+    if (!moving || moving.id === target.id) return;
+    if (!inCat(moving, target.category)) return toast("Butonlar yalnızca kendi kategorisi içinde taşınabilir. Kategoriyi Kişiler ekranından değiştirin.", true);
+    const group = sorted.filter((p) => inCat(p, target.category)).map((p) => p.id).filter((id) => id !== moving.id);
+    const from = sorted.findIndex((p) => p.id === moving.id);
+    const to = sorted.findIndex((p) => p.id === target.id);
+    // Dropped on a later button: goes after it; on an earlier one: goes before it.
+    group.splice(group.indexOf(target.id) + (from < to ? 1 : 0), 0, moving.id);
+    try { await api.reorderPeople(group); } catch (e) { toast(errorText(e), true); }
+  };
 
   const isPlaying = (p: Person) => player.current?.kind === "person" && player.current.title === p.name;
   const call = async (p: Person) => {
@@ -371,8 +397,14 @@ function Deck({ api, categories, people, player, toast }: {
     const queued = !playing && player.queue.some((x) => x.kind === "person" && x.title === p.name);
     const label = playing ? "● Yayında" : queued ? "Sırada" : !p.soundFile ? "Ses yok" : "";
     return (
-      <button key={p.id} className={`card ${playing ? "playing" : queued ? "queued" : ""}`} style={{ "--c": padColor(p) } as CSSProperties}
-        disabled={!p.soundFile} onClick={() => call(p)} title={`${p.name} · toplam ${p.count}, bugün ${p.today}`}>
+      <button key={p.id} className={`card ${playing ? "playing" : queued ? "queued" : ""} ${dragId === p.id ? "dragging" : ""} ${overId === p.id && dragId !== p.id ? "drop-target" : ""}`}
+        style={{ "--c": padColor(p) } as CSSProperties}
+        disabled={!p.soundFile} onClick={() => call(p)} title={`${p.name} · toplam ${p.count}, bugün ${p.today}${canDrag ? " · yerini değiştirmek için sürükleyin" : ""}`}
+        draggable={canDrag}
+        onDragStart={(e) => { setDragId(p.id); e.dataTransfer.effectAllowed = "move"; e.dataTransfer.setData("text/plain", String(p.id)); }}
+        onDragEnd={() => { setDragId(null); setOverId(null); }}
+        onDragOver={(e) => { if (dragId !== null) { e.preventDefault(); e.dataTransfer.dropEffect = "move"; if (overId !== p.id) setOverId(p.id); } }}
+        onDrop={(e) => { e.preventDefault(); drop(p); }}>
         <span className="lbl"><span className="name">{tr.upper(p.name)}</span><span className="state">{label}</span></span>
         <span className="count">{String(p.count).padStart(2, "0")}</span>
       </button>
