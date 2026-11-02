@@ -135,51 +135,135 @@ pub struct Server {
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
-/// Binds the port, retrying for a few seconds: right after a restart (settings saved) or an
-/// app restart, Windows can still hold the port for a moment.
-fn bind(port: u16) -> std::io::Result<TcpListener> {
-    let mut last = None;
-    for _ in 0..20 {
-        match TcpListener::bind(("0.0.0.0", port)) {
+/// The server answers "who is the FABE server?" on these UDP ports (the first one it can
+/// open); clients ask on all of them, so nobody ever has to type a port.
+pub const DISCOVERY_PORTS: [u16; 3] = [55557, 45557, 35557];
+const DISCOVERY_ASK: &[u8] = b"FABE_ANONS_SUNUCU_KIM?";
+/// Ports tried for the server after the preferred one, before letting Windows pick any free one.
+const FALLBACK_PORTS: std::ops::RangeInclusive<u16> = 55556..=55599;
+
+/// Opens the first free port: the preferred one (55555, same as the old app, so old clients
+/// keep working), then 55556-55599, then any free port. Right after a restart Windows can
+/// still hold the preferred port for a moment, so it is retried briefly first.
+fn bind_free(preferred: u16) -> std::io::Result<TcpListener> {
+    for _ in 0..8 {
+        match TcpListener::bind(("0.0.0.0", preferred)) {
             Ok(l) => return Ok(l),
-            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => last = Some(e),
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => std::thread::sleep(Duration::from_millis(250)),
             Err(e) => return Err(e),
         }
-        std::thread::sleep(Duration::from_millis(250));
     }
-    Err(last.unwrap_or_else(|| std::io::Error::other("port açılamadı")))
+    for p in FALLBACK_PORTS.filter(|p| *p != preferred) {
+        if let Ok(l) = TcpListener::bind(("0.0.0.0", p)) {
+            return Ok(l);
+        }
+    }
+    TcpListener::bind(("0.0.0.0", 0))
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Found {
+    pub name: String,
+    #[serde(default)]
+    pub ip: String,
+    pub port: u16,
+    #[serde(default)]
+    pub version: String,
+}
+
+/// Answers discovery requests until `stop` is set.
+fn respond(stop: Arc<AtomicBool>, name: String, port: u16) {
+    let Some(sock) = DISCOVERY_PORTS.iter().find_map(|p| std::net::UdpSocket::bind(("0.0.0.0", *p)).ok()) else {
+        log::warn!("Otomatik bulma için UDP portu açılamadı; istemciler IP adresi elle yazılarak bağlanabilir");
+        return;
+    };
+    let _ = sock.set_read_timeout(Some(Duration::from_millis(300)));
+    let reply = serde_json::to_vec(&Found { name, ip: String::new(), port, version: env!("CARGO_PKG_VERSION").into() })
+        .unwrap_or_default();
+    let mut buf = [0u8; 64];
+    while !stop.load(Ordering::Relaxed) {
+        if let Ok((n, from)) = sock.recv_from(&mut buf) {
+            if &buf[..n] == DISCOVERY_ASK {
+                let _ = sock.send_to(&reply, from);
+            }
+        }
+    }
+}
+
+/// Finds FABE servers on the local network (asks by broadcast, waits `wait` for answers).
+pub fn discover(wait: Duration) -> Vec<Found> {
+    let Ok(sock) = std::net::UdpSocket::bind("0.0.0.0:0") else { return vec![] };
+    let _ = sock.set_broadcast(true);
+    let mut targets: Vec<std::net::IpAddr> = vec![std::net::Ipv4Addr::BROADCAST.into(), std::net::Ipv4Addr::LOCALHOST.into()];
+    // Also the subnet's own broadcast address (x.y.z.255): some routers drop 255.255.255.255.
+    if let Some(std::net::IpAddr::V4(me)) = local_ip() {
+        let o = me.octets();
+        targets.push(std::net::Ipv4Addr::new(o[0], o[1], o[2], 255).into());
+    }
+    for ip in &targets {
+        for p in DISCOVERY_PORTS {
+            let _ = sock.send_to(DISCOVERY_ASK, (*ip, p));
+        }
+    }
+    let end = std::time::Instant::now() + wait;
+    let mut found: Vec<Found> = Vec::new();
+    let mut buf = [0u8; 512];
+    while let Some(left) = end.checked_duration_since(std::time::Instant::now()) {
+        let _ = sock.set_read_timeout(Some(left.max(Duration::from_millis(1))));
+        let Ok((n, from)) = sock.recv_from(&mut buf) else { break };
+        if let Ok(mut f) = serde_json::from_slice::<Found>(&buf[..n]) {
+            f.ip = if from.ip().is_loopback() { local_ip().map(|i| i.to_string()).unwrap_or_else(|| from.ip().to_string()) } else { from.ip().to_string() };
+            if !found.iter().any(|x| x.ip == f.ip && x.port == f.port) {
+                found.push(f);
+            }
+        }
+    }
+    found
+}
+
+/// This PC's address on the local network.
+pub fn local_ip() -> Option<std::net::IpAddr> {
+    // Connecting a UDP socket sends nothing; it only asks the OS which interface it would use.
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("8.8.8.8:80").ok()?;
+    s.local_addr().ok().map(|a| a.ip())
 }
 
 impl Server {
-    /// Starts listening in the background. `cache` holds sounds received from clients;
-    /// `sounds` is the server's own sesler folder (for old clients that send a file name).
-    pub fn start(port: u16, name: String, cache: PathBuf, sounds: PathBuf, handler: Handler) -> Self {
+    /// Starts listening in the background on a free port (see `bind_free`) and answers
+    /// discovery requests. `cache` holds sounds received from clients; `sounds` is the server's
+    /// own sesler folder (for old clients that send a file name).
+    pub fn start(preferred: u16, name: String, cache: PathBuf, sounds: PathBuf, handler: Handler) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
-        let status = Arc::new(Mutex::new(ServerStatus { port, ..Default::default() }));
+        let status = Arc::new(Mutex::new(ServerStatus { port: preferred, ..Default::default() }));
         let (stop2, status2) = (stop.clone(), status.clone());
         let thread = std::thread::Builder::new()
             .name("fabe-server".into())
             .spawn(move || {
-                let listener = match bind(port) {
+                let listener = match bind_free(preferred) {
                     Ok(l) => l,
                     Err(e) => {
-                        let msg = if e.kind() == std::io::ErrorKind::AddrInUse {
-                            format!(
-                                "{port} numaralı port başka bir program tarafından kullanılıyor. Bu bilgisayarda eski FABE Anons \
-                                 (3.x) ya da bu uygulamanın ikinci bir kopyası açık olabilir: onu kapatıp uygulamayı yeniden \
-                                 başlatın. Gerekirse portu değiştirin (istemcilerde de aynı port yazılmalı)."
-                            )
-                        } else {
-                            format!("{port} numaralı port açılamadı: {e}")
-                        };
+                        let msg = format!("Sunucu başlatılamadı: {e}");
                         log::error!("{msg}");
                         status2.lock().unwrap().error = Some(msg);
                         return;
                     }
                 };
+                let port = listener.local_addr().map(|a| a.port()).unwrap_or(preferred);
+                if port != preferred {
+                    log::warn!("{preferred} portu dolu; sunucu {port} portunu kullanıyor (eski 3.x istemciler bağlanamaz)");
+                }
                 let _ = listener.set_nonblocking(true);
-                status2.lock().unwrap().listening = true;
+                {
+                    let mut st = status2.lock().unwrap();
+                    st.listening = true;
+                    st.port = port;
+                }
                 log::info!("Sunucu {port} portunda dinliyor");
+                let responder = {
+                    let (stop, name) = (stop2.clone(), name.clone());
+                    std::thread::spawn(move || respond(stop, name, port))
+                };
                 while !stop2.load(Ordering::Relaxed) {
                     match listener.accept() {
                         Ok((stream, addr)) => {
@@ -198,6 +282,7 @@ impl Server {
                         }
                     }
                 }
+                let _ = responder.join();
                 status2.lock().unwrap().listening = false;
             })
             .expect("server thread");
@@ -496,10 +581,17 @@ mod tests {
             let st = server.status();
             assert!(st.listening, "{:?}", st.error);
         }
-        // A second server on a port in use reports it clearly (after its retries).
-        let other = start();
-        std::thread::sleep(Duration::from_millis(5500));
-        assert!(other.status().error.unwrap().contains("başka bir program"));
+        // A second server while the port is taken picks another free port by itself,
+        // and clients find it without being told the port.
+        let other = Server::start(port, "IKINCI".into(), dir.clone(), dir.clone(), handler.clone());
+        std::thread::sleep(Duration::from_millis(2600));
+        let st = other.status();
+        assert!(st.listening, "{:?}", st.error);
+        assert_ne!(st.port, port);
+        let found = discover(Duration::from_millis(800));
+        assert!(found.iter().any(|f| f.port == st.port || f.port == port), "{found:?}");
+        drop(other);
+        drop(server);
     }
 
     #[test]

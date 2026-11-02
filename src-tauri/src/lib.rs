@@ -103,6 +103,34 @@ fn apply_network(app: &Arc<App>, handle: &tauri::AppHandle) {
     *slot = Some(network::Server::start(cfg.port, cfg.me, paths::network_cache_dir(), paths::sounds_dir(), handler));
 }
 
+/// Sends an announcement to the server. If the server can't be reached at the saved address
+/// (its IP or port changed, or none was saved yet), finds it on the network, saves the new
+/// address and tries once more, so nobody has to type IPs or ports.
+fn send_to_server(app: &App, title: &str, kind: &str, gain: f32, file: &std::path::Path) -> anyhow::Result<()> {
+    let cfg = app.net();
+    let first = if cfg.ip.trim().is_empty() {
+        Err(anyhow::anyhow!("Sunucu bulunamadı. Sunucu bilgisayarda FABE Anons açık ve 'Sunucu' modunda mı?"))
+    } else {
+        network::send_call(&cfg.ip, cfg.port, &cfg.me, title, kind, NAME_REPS, gain, file)
+    };
+    let Err(e) = first else { return Ok(()) };
+    let found = network::discover(Duration::from_millis(1500));
+    let pick = found.iter().find(|f| f.ip == cfg.ip.trim()).or(if found.len() == 1 { found.first() } else { None });
+    let Some(f) = pick else {
+        if found.len() > 1 {
+            anyhow::bail!("Ağda birden fazla FABE sunucusu var. Ayarlar > Ağ ayarları > Sunucuyu bul ile birini seçin.");
+        }
+        return Err(e);
+    };
+    if f.ip == cfg.ip.trim() && f.port == cfg.port {
+        return Err(e); // it is there but refused: a real error
+    }
+    log::info!("Sunucu yeni adreste bulundu: {}:{} ({})", f.ip, f.port, f.name);
+    app.store.set_setting("net_server_ip", &f.ip)?;
+    app.store.set_setting("net_port", &f.port.to_string())?;
+    network::send_call(&f.ip, f.port, &cfg.me, title, kind, NAME_REPS, gain, file)
+}
+
 type AppState<'a> = State<'a, Arc<App>>;
 
 #[derive(Serialize)]
@@ -175,10 +203,8 @@ async fn call_person(id: i64, app: tauri::State<'_, Arc<App>>, handle: tauri::Ap
     let cfg = app.net();
     if cfg.mode == "istemci" {
         // This PC sends; the server plays.
-        let (title, me) = (p.name.clone(), cfg.me.clone());
-        tauri::async_runtime::spawn_blocking(move || {
-            network::send_call(&cfg.ip, cfg.port, &cfg.me, &title, "person", NAME_REPS, 1.0, &path)
-        })
+        let (title, me, a) = (p.name.clone(), cfg.me.clone(), app.clone());
+        tauri::async_runtime::spawn_blocking(move || send_to_server(&a, &title, "person", 1.0, &path))
         .await
         .map_err(err)?
         .map_err(|e| err(format!("{e:#}")))?;
@@ -226,9 +252,9 @@ async fn speak(text: String, app: tauri::State<'_, Arc<App>>, handle: tauri::App
         .map_err(|e| err(format!("{e:#}")))?;
     let cfg = app.net();
     if cfg.mode == "istemci" {
-        let (file, title, gain, me) = (spoken.file.clone(), text.clone(), s.tts_gain, cfg.me.clone());
+        let (file, title, gain, me, a) = (spoken.file.clone(), text.clone(), s.tts_gain, cfg.me.clone(), app.clone());
         let sent = tauri::async_runtime::spawn_blocking(move || {
-            let r = network::send_call(&cfg.ip, cfg.port, &cfg.me, &title, "tts", NAME_REPS, gain, &file);
+            let r = send_to_server(&a, &title, "tts", gain, &file);
             let _ = std::fs::remove_file(&file);
             r
         })
@@ -532,15 +558,24 @@ fn net_status(app: AppState) -> Option<network::ServerStatus> {
     app.server.lock().unwrap_or_else(|e| e.into_inner()).as_ref().map(|s| s.status())
 }
 
-/// Local IP addresses of this PC (shown on the network page so clients know what to type).
+/// Local IP addresses of this PC (shown on the network page).
 #[tauri::command]
 fn local_ips() -> Vec<String> {
-    // Connecting a UDP socket sends nothing; it only asks the OS which interface it would use.
-    std::net::UdpSocket::bind("0.0.0.0:0")
-        .and_then(|s| s.connect("8.8.8.8:80").map(|_| s))
-        .and_then(|s| s.local_addr())
-        .map(|a| vec![a.ip().to_string()])
-        .unwrap_or_default()
+    network::local_ip().map(|i| vec![i.to_string()]).unwrap_or_default()
+}
+
+/// "Sunucuyu bul": FABE servers on the local network.
+#[tauri::command]
+async fn find_servers() -> Result<Vec<network::Found>, String> {
+    tauri::async_runtime::spawn_blocking(|| network::discover(Duration::from_millis(1500))).await.map_err(err)
+}
+
+/// Saves the server the user picked from "Sunucuyu bul" (IP and port, no typing).
+#[tauri::command]
+fn use_server(ip: String, port: u16, app: AppState) -> Result<(), String> {
+    app.store.set_setting("net_server_ip", ip.trim()).map_err(err)?;
+    app.store.set_setting("net_port", &port.to_string()).map_err(err)?;
+    Ok(())
 }
 
 #[tauri::command]
@@ -770,6 +805,8 @@ pub fn run() {
             test_connection,
             net_status,
             local_ips,
+            find_servers,
+            use_server,
             check_update,
             install_update,
             stop_all,
