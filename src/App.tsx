@@ -397,7 +397,8 @@ function Deck({ api, categories, people, player, toast, padSize }: {
     try {
       const note = await api.callPerson(p.id);
       if (note) toast(note);
-      else if (player.current) toast(`${p.name} sıraya alındı`);
+      // Break music pauses for a name, so the name is not "queued" behind it.
+      else if (player.current && player.current.kind !== "break") toast(`${p.name} sıraya alındı`);
     } catch (e) { toast(errorText(e), true); }
   };
 

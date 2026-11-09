@@ -3,11 +3,14 @@
 //! One thread owns the sound card. Every announcement - a staff button, a live (TTS)
 //! announcement, a scheduled break, or a request from another computer - goes into the
 //! same queue, so two people pressing at once never cut each other off.
+//!
+//! The one exception is break music: a name or live announcement does not wait behind it.
+//! The music pauses, the announcement plays, then the music carries on where it stopped.
 
 use crate::ducking::Ducker;
 use anyhow::{Context, Result};
 use crossbeam_channel::{unbounded, Receiver, Sender};
-use rodio::{buffer::SamplesBuffer, source::UniformSourceIterator, Decoder, OutputStream, Sink, Source};
+use rodio::{buffer::SamplesBuffer, source::UniformSourceIterator, Decoder, OutputStream, OutputStreamHandle, Sink, Source};
 use serde::Serialize;
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -229,7 +232,14 @@ impl Engine {
 
     fn handle(&mut self, c: Cmd, sink: Option<&Sink>) {
         match c {
-            Cmd::Enqueue(i) => self.queue.push_back(i),
+            Cmd::Enqueue(i) => {
+                // Announcements go ahead of any waiting break music.
+                let at = match i.kind {
+                    Kind::Break => self.queue.len(),
+                    _ => self.queue.iter().position(|q| q.kind == Kind::Break).unwrap_or(self.queue.len()),
+                };
+                self.queue.insert(at, i);
+            }
             Cmd::Stop => {
                 self.stopped = true;
                 for i in self.queue.drain(..) {
@@ -273,57 +283,72 @@ impl Engine {
                 self.emit(PlayerState { error: Some("Ses kartı bulunamadı".into()), ..Default::default() });
                 continue;
             };
-            let clip = match Clip::load(&item.file) {
-                Ok(c) if item.kind == Kind::Tts => c.with_gain(item.gain).with_lead_in(Duration::from_millis(150)),
-                Ok(c) => c.with_gain(item.gain),
-                Err(e) => {
-                    log::error!("{e:#}");
-                    if item.temp {
-                        let _ = std::fs::remove_file(&item.file);
-                    }
-                    self.emit(PlayerState { error: Some(format!("{}: ses dosyası çalınamadı", item.title)), ..Default::default() });
-                    continue;
-                }
-            };
-            let Ok(sink) = Sink::try_new(handle) else {
+            let handle = handle.clone();
+            if !self.play_item(&handle, item) {
                 output = None;
-                continue;
-            };
-            sink.set_volume(self.volume);
-            self.ducker.duck();
-
-            let reps = item.reps.max(1);
-            for rep in 1..=reps {
-                let now = NowPlaying {
-                    id: item.id,
-                    title: item.title.clone(),
-                    kind: item.kind,
-                    source: item.source.clone(),
-                    rep,
-                    reps,
-                };
-                // Breaks (and "Dinle" previews) play without the gong.
-                if rep == 1 && self.chime && item.kind != Kind::Break && !self.play(&sink, &Clip::chime(), &now) {
-                    break;
-                }
-                if !self.play(&sink, &clip, &now) {
-                    break;
-                }
-                if rep < reps && !self.wait(REPEAT_GAP, &sink, &now) {
-                    break;
-                }
-            }
-            if item.temp {
-                let _ = std::fs::remove_file(&item.file);
             }
         }
     }
 
+    /// An announcement is waiting that should not wait behind break music.
+    fn announcement_waiting(&self) -> bool {
+        self.queue.front().is_some_and(|i| i.kind != Kind::Break)
+    }
+
+    /// Plays one queue item through to the end (or DURDUR). Returns false only when the
+    /// sound card could not be opened, so the caller reopens it.
+    fn play_item(&mut self, handle: &OutputStreamHandle, item: Item) -> bool {
+        let clip = match Clip::load(&item.file) {
+            Ok(c) if item.kind == Kind::Tts => c.with_gain(item.gain).with_lead_in(Duration::from_millis(150)),
+            Ok(c) => c.with_gain(item.gain),
+            Err(e) => {
+                log::error!("{e:#}");
+                if item.temp {
+                    let _ = std::fs::remove_file(&item.file);
+                }
+                self.emit(PlayerState { error: Some(format!("{}: ses dosyası çalınamadı", item.title)), ..Default::default() });
+                return true;
+            }
+        };
+        let Ok(sink) = Sink::try_new(handle) else {
+            return false;
+        };
+        sink.set_volume(self.volume);
+        self.ducker.duck();
+
+        let reps = item.reps.max(1);
+        for rep in 1..=reps {
+            let now = NowPlaying {
+                id: item.id,
+                title: item.title.clone(),
+                kind: item.kind,
+                source: item.source.clone(),
+                rep,
+                reps,
+            };
+            // Breaks (and "Dinle" previews) play without the gong.
+            if rep == 1 && self.chime && item.kind != Kind::Break && !self.play(&sink, &Clip::chime(), &now, handle) {
+                break;
+            }
+            if !self.play(&sink, &clip, &now, handle) {
+                break;
+            }
+            if rep < reps && !self.wait(REPEAT_GAP, &sink, &now) {
+                break;
+            }
+        }
+        if item.temp {
+            let _ = std::fs::remove_file(&item.file);
+        }
+        true
+    }
+
     /// Plays one clip; returns false if the user pressed DURDUR.
-    fn play(&mut self, sink: &Sink, clip: &Clip, now: &NowPlaying) -> bool {
+    fn play(&mut self, sink: &Sink, clip: &Clip, now: &NowPlaying, handle: &OutputStreamHandle) -> bool {
         sink.append(SamplesBuffer::new(clip.channels, clip.rate, clip.samples.clone()));
         let dur = clip.duration();
         let start = Instant::now();
+        let mut paused = Duration::ZERO;
         while !sink.empty() {
             while let Ok(c) = self.rx.try_recv() {
                 self.handle(c, Some(sink));
@@ -331,7 +356,23 @@ impl Engine {
             if self.stopped {
                 return false;
             }
-            let pos = start.elapsed().min(dur);
+            // Break music pauses for announcements, then continues where it stopped.
+            if now.kind == Kind::Break && self.announcement_waiting() {
+                let t = Instant::now();
+                sink.pause();
+                while self.announcement_waiting() && !self.stopped {
+                    let item = self.queue.pop_front().unwrap();
+                    self.play_item(handle, item);
+                }
+                if self.stopped {
+                    return false;
+                }
+                paused += t.elapsed();
+                sink.set_volume(self.volume);
+                sink.play();
+                continue;
+            }
+            let pos = start.elapsed().saturating_sub(paused).min(dur);
             self.emit(PlayerState {
                 current: Some(now.clone()),
                 position_ms: pos.as_millis() as u64,
@@ -415,6 +456,24 @@ mod tests {
         // Fades in instead of starting at full level.
         assert!(led.samples[pad..pad + 20].iter().all(|s| s.abs() < 0.05));
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    fn item(id: u64, kind: Kind) -> Item {
+        Item { id, title: format!("{id}"), kind, source: String::new(), file: PathBuf::new(), reps: 1, gain: 1.0, temp: false }
+    }
+
+    #[test]
+    fn announcements_jump_ahead_of_break_music() {
+        let (_tx, rx) = unbounded();
+        let mut e = Engine::new(rx, Box::new(|_| {}), 1.0, true);
+        e.handle(Cmd::Enqueue(item(1, Kind::Break)), None);
+        assert!(!e.announcement_waiting());
+        e.handle(Cmd::Enqueue(item(2, Kind::Person)), None);
+        e.handle(Cmd::Enqueue(item(3, Kind::Break)), None);
+        e.handle(Cmd::Enqueue(item(4, Kind::Tts)), None);
+        let order: Vec<u64> = e.queue.iter().map(|i| i.id).collect();
+        assert_eq!(order, vec![2, 4, 1, 3], "names and live announcements first, in the order pressed");
+        assert!(e.announcement_waiting());
     }
 
     #[test]

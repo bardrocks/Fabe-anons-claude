@@ -1,1 +1,1 @@
-FABE Anons 4.3.0: Anons ekranına personel butonları için boyut ayarı geldi. Arama kutusunun yanındaki kaydırıcıyla butonları %70 ile %200 arasında küçültüp büyütebilirsiniz; çift tıklayınca %100'e döner. Seçilen boyut her bilgisayarda ayrı saklanır ve yedeğe dahildir.
+FABE Anons 4.3.1: Mola müziği çalarken bir isme ya da canlı anonsa basıldığında anons artık sıraya girmez, hemen çalar. Mola müziği bu sırada duraklar, anons bitince kaldığı yerden devam eder. (4.3.0 ile gelen personel butonu boyut ayarı da bu sürümde var.)
