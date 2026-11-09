@@ -209,6 +209,7 @@ mod tests {
         store.add_person("Ayşe", "Depo", Some("#FF0000"), Some("ayse.mp3"), 4).unwrap();
         store.add_break("12:30", "ayse.mp3", "Öğle").unwrap();
         store.set_setting("volume", "0.5").unwrap();
+        store.set_setting("pad_size", "140").unwrap();
 
         let zip = tmp.join("yedek.zip");
         create(&store, &sounds, &zip).unwrap();
@@ -217,6 +218,7 @@ mod tests {
         let id = store.people().unwrap()[0].id;
         store.delete_person(id).unwrap();
         store.set_setting("volume", "1").unwrap();
+        store.set_setting("pad_size", "100").unwrap();
         std::fs::remove_file(sounds.join("ayse.mp3")).unwrap();
 
         let rep = restore(&zip, &store, &sounds).unwrap();
@@ -225,6 +227,7 @@ mod tests {
         let p = &store.people().unwrap()[0];
         assert_eq!((p.name.as_str(), p.category.as_str(), p.color.as_deref(), p.count), ("Ayşe", "Depo", Some("#FF0000"), 4));
         assert_eq!(store.setting("volume").unwrap().as_deref(), Some("0.5"));
+        assert_eq!(store.setting("pad_size").unwrap().as_deref(), Some("140"), "button size comes back too");
         assert!(sounds.join("ayse.mp3").is_file());
         assert!(Path::new(&rep.safety_backup).is_file(), "current data is saved before restoring");
         std::fs::remove_dir_all(&tmp).ok();

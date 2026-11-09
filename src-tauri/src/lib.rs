@@ -133,6 +133,10 @@ fn send_to_server(app: &App, title: &str, kind: &str, gain: f32, file: &std::pat
 
 type AppState<'a> = State<'a, Arc<App>>;
 
+/// Allowed range for the person button size slider, in percent.
+const PAD_SIZE_MIN: u16 = 70;
+const PAD_SIZE_MAX: u16 = 200;
+
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 struct Settings {
@@ -147,6 +151,8 @@ struct Settings {
     net_server_ip: String,
     net_port: u16,
     pc_name: String,
+    /// Size of the person buttons on the main screen, in percent (70-200).
+    pad_size: u16,
     version: String,
 }
 
@@ -162,6 +168,13 @@ impl Settings {
             net_server_ip: s.setting("net_server_ip").ok().flatten().unwrap_or_default(),
             net_port: s.setting("net_port").ok().flatten().and_then(|v| v.parse().ok()).unwrap_or(DEFAULT_PORT),
             pc_name: s.setting("pc_name").ok().flatten().unwrap_or_else(default_pc_name),
+            pad_size: s
+                .setting("pad_size")
+                .ok()
+                .flatten()
+                .and_then(|v| v.parse::<u16>().ok())
+                .map(|v| v.clamp(PAD_SIZE_MIN, PAD_SIZE_MAX))
+                .unwrap_or(100),
             version: env!("CARGO_PKG_VERSION").into(),
         }
     }
@@ -650,6 +663,10 @@ fn set_setting(key: String, value: String, app: AppState, handle: tauri::AppHand
             }
         }
         "net_server_ip" | "pc_name" => {}
+        "pad_size" => match value.parse::<u16>() {
+            Ok(v) if (PAD_SIZE_MIN..=PAD_SIZE_MAX).contains(&v) => {}
+            _ => return Err(format!("Buton boyutu %{PAD_SIZE_MIN}-%{PAD_SIZE_MAX} arasında olmalı")),
+        },
         "net_port" => {
             value.parse::<u16>().map_err(|_| "Port 1-65535 arasında bir sayı olmalı".to_string())?;
         }
