@@ -109,18 +109,19 @@ button { cursor: pointer; }
   letter-spacing: .06em; color: var(--dim); text-transform: uppercase; }
 .tab[aria-selected="true"] { color: var(--led); border-color: rgba(255,176,46,.45); box-shadow: inset 0 0 12px var(--led-dim); }
 .tab span { margin-left: 4px; opacity: .7; }
-.pads { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--pad-min-width), 1fr)); gap: 9px; overflow: auto; align-content: start; padding: 4px; }
-.card { --c: var(--dim); position: relative; min-height: var(--pad-min-height); max-width: 100%; border: 0; border-radius: 12px;
+/* --s is the button size from the slider (1 = 100%). */
+.pads { --s: 1; display: grid; grid-template-columns: repeat(auto-fill, minmax(min(100%, calc(var(--pad-min-width) * var(--s))), 1fr)); gap: calc(9px * var(--s)); overflow: auto; align-content: start; padding: 4px; }
+.card { --c: var(--dim); position: relative; min-height: calc(var(--pad-min-height) * var(--s)); max-width: 100%; border: 0; border-radius: 12px;
   background: linear-gradient(180deg, color-mix(in srgb, var(--c) 10%, var(--key-top)), #202124); box-shadow: 0 3px 0 #0c0c0d, inset 0 1px 0 rgba(255,255,255,.06);
-  padding: 14px 12px 10px; display: flex; flex-direction: column; justify-content: flex-end; text-align: left; transition: transform .06s, box-shadow .06s; }
-.card::before { content: ""; position: absolute; left: 8px; right: 8px; top: 6px; height: 6px; border-radius: 3px; background: var(--c); opacity: .95;
+  padding: calc(14px * var(--s)) calc(12px * var(--s)) calc(10px * var(--s)); display: flex; flex-direction: column; justify-content: flex-end; text-align: left; transition: transform .06s, box-shadow .06s; }
+.card::before { content: ""; position: absolute; left: calc(8px * var(--s)); right: calc(8px * var(--s)); top: calc(6px * var(--s)); height: max(4px, calc(6px * var(--s))); border-radius: 3px; background: var(--c); opacity: .95;
   box-shadow: 0 0 10px color-mix(in srgb, var(--c) 45%, transparent); }
 .card:active { transform: translateY(2px); box-shadow: 0 1px 0 #0c0c0d; }
 .card:disabled { opacity: .45; cursor: not-allowed; }
-.card .count { position: absolute; top: 14px; right: 11px; font-family: var(--f-led); font-weight: 700; font-size: 16px; color: var(--dim); line-height: 1; }
-.card .lbl { display: flex; flex-direction: column; min-width: 0; padding-top: 12px; }
-.card .name { font-weight: 700; font-size: 15px; letter-spacing: .04em; text-transform: uppercase; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.card .state { font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .1em; color: var(--dim); min-height: 12px; text-transform: uppercase; }
+.card .count { position: absolute; top: calc(14px * var(--s)); right: calc(11px * var(--s)); font-family: var(--f-led); font-weight: 700; font-size: calc(16px * var(--s)); color: var(--dim); line-height: 1; }
+.card .lbl { display: flex; flex-direction: column; min-width: 0; padding-top: calc(12px * var(--s)); }
+.card .name { font-weight: 700; letter-spacing: .04em; text-transform: uppercase; font-size: calc(15px * var(--s)); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.card .state { font-family: var(--f-mono); font-size: calc(10.5px * max(var(--s), .85)); letter-spacing: .1em; color: var(--dim); min-height: 12px; text-transform: uppercase; }
 .card.playing { background: radial-gradient(120% 120% at 50% 0%, color-mix(in srgb, var(--c) 55%, var(--key-top)), #202124 75%);
   box-shadow: 0 4px 0 #0c0c0d, 0 0 28px color-mix(in srgb, var(--c) 55%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--c) 80%, transparent); }
 .card.playing::before { opacity: 1; box-shadow: 0 0 14px var(--c); }
@@ -269,6 +270,13 @@ input[type=time].input { color-scheme: dark; font-family: var(--f-mono); font-si
 .name-btn:focus-visible { outline: 2px solid var(--led); outline-offset: 2px; border-radius: 4px; }
 .btn.small.on { border-color: var(--led); color: var(--led); }
 .group > .tabs { margin-left: 0; justify-content: flex-start; }
+
+/* Button size slider */
+.sizer { flex: none; display: flex; align-items: center; gap: 6px; color: var(--dim); font-family: var(--f-mono); font-size: 11px; }
+.sizer svg { width: 12px; height: 12px; flex: none; }
+.sizer svg:nth-of-type(2) { width: 17px; height: 17px; }
+.sizer input[type=range] { width: 110px; accent-color: var(--led); }
+.sizer b { color: var(--led); font-weight: 700; min-width: 38px; }
 
 /* Drag and drop on the pads */
 .card[draggable="true"] { cursor: grab; }

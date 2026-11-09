@@ -42,6 +42,8 @@ export interface Settings {
   netServerIp: string;
   netPort: number;
   pcName: string;
+  /** Person button size on the main screen, percent (70-200). */
+  padSize: number;
   version: string;
 }
 export interface Snapshot { categories: Category[]; people: Person[]; history: CallEntry[]; breaks: BreakEntry[]; settings: Settings; }
@@ -70,7 +72,7 @@ export interface Release { version: string; notes: string; url: string; sha256: 
 export interface UpdateProgress { step: string; done: number; total: number; }
 export interface PersonInput { name: string; category: string; color: string | null; soundFile: string | null; }
 export interface BreakInput { time: string; label: string; soundFile: string | null; }
-export type SettingKey = "volume" | "tts_gain" | "tts_rate" | "chime" | "net_mode" | "net_server_ip" | "net_port" | "pc_name" | "tts_engine";
+export type SettingKey = "volume" | "tts_gain" | "tts_rate" | "chime" | "net_mode" | "net_server_ip" | "net_port" | "pc_name" | "tts_engine" | "pad_size";
 
 export interface Backend {
   snapshot(): Promise<Snapshot>;
@@ -207,7 +209,7 @@ function mockBackend(): Backend {
   let categories: Category[] = ["Personeller", "Firmalar", "Depo"].map((name, i) => ({ id: i + 1, name, position: i + 1 }));
   let breaks: BreakEntry[] = [{ id: 1, time: "12:30", soundFile: "ogle-molasi.mp3", label: "Öğle molası" }, { id: 2, time: "19:12", soundFile: "mola1.mp3", label: "Mola" }];
   const history: CallEntry[] = [];
-  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", version: "4.2.1" };
+  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", padSize: 100, version: "4.2.1" };
   const playerCbs = new Set<(s: PlayerState) => void>();
   const dataCbs = new Set<() => void>();
   const changed = () => dataCbs.forEach((cb) => cb());
@@ -322,6 +324,7 @@ function mockBackend(): Backend {
       if (key === "net_server_ip") settings.netServerIp = value;
       if (key === "net_port") settings.netPort = +value;
       if (key === "pc_name") settings.pcName = value;
+      if (key === "pad_size") settings.padSize = +value;
       if (key === "tts_engine") settings.ttsEngine = value as TtsEngineChoice;
     },
     async createBackup() { return "C:\\Users\\kasa\\Desktop\\FABE_Anons_Yedek.zip"; },

@@ -100,7 +100,7 @@ export default function App() {
         <>
           <Master player={player} clock={clock} nextBreak={nextBreak} onStop={stop} mode={data.settings.netMode} />
           <Mic api={api} data={data} toast={showToast} onSaved={() => refresh(api)} />
-          <Deck api={api} categories={data.categories} people={data.people} player={player} toast={showToast} />
+          <Deck api={api} categories={data.categories} people={data.people} player={player} toast={showToast} padSize={data.settings.padSize} />
           <Side api={api} data={data} />
         </>
       ) : page === "mola" ? (
@@ -323,10 +323,30 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
 /** "all" or a category name. */
 type Tab = string;
 
-function Deck({ api, categories, people, player, toast }: {
-  api: Backend; categories: Category[]; people: Person[]; player: PlayerState; toast: Toast;
+const PAD_SIZE_MIN = 70, PAD_SIZE_MAX = 200;
+
+/** Slider that makes the person buttons smaller or bigger. Kept per PC (local settings, included in backups). */
+function PadSizer({ api, value, onChange, toast }: { api: Backend; value: number; onChange: (v: number) => void; toast: Toast }) {
+  const save = (v: number) => api.setSetting("pad_size", String(v)).catch((e) => toast(errorText(e), true));
+  const reset = () => { onChange(100); save(100); };
+  return (
+    <label className="sizer" title="Kişi butonlarının boyutu · çift tıklayınca %100'e döner" onDoubleClick={reset}>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="7" y="7" width="10" height="10" rx="2" /></svg>
+      <input type="range" min={PAD_SIZE_MIN} max={PAD_SIZE_MAX} step={5} value={value} aria-label="Buton boyutu"
+        onChange={(e) => onChange(+e.target.value)} onPointerUp={(e) => save(+e.currentTarget.value)} onKeyUp={(e) => save(+e.currentTarget.value)} />
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" aria-hidden="true"><rect x="3" y="3" width="18" height="18" rx="3" /></svg>
+      <b>%{value}</b>
+    </label>
+  );
+}
+
+function Deck({ api, categories, people, player, toast, padSize }: {
+  api: Backend; categories: Category[]; people: Person[]; player: PlayerState; toast: Toast; padSize: number;
 }) {
   const [tab, setTab] = useState<Tab>("all");
+  // Follows the slider live; the saved value comes back with the next snapshot.
+  const [size, setSize] = useState(padSize);
+  useEffect(() => setSize(padSize), [padSize]);
   const [q, setQ] = useState("");
   const [adding, setAdding] = useState<string | null>(null);
   const search = useRef<HTMLInputElement>(null);
@@ -424,6 +444,7 @@ function Deck({ api, categories, people, player, toast }: {
             onKeyDown={(e) => { if (e.key === "Enter" && list[0]) { call(list[0]); setQ(""); } }} />
           <kbd>/</kbd>
         </label>
+        <PadSizer api={api} value={size} onChange={setSize} toast={toast} />
         <div className="tabs" role="tablist">
           {tabs.map(([k, l, n]) => (
             <button key={k} className="tab" role="tab" aria-selected={tab === k} onClick={() => setTab(k)}>{l}<span>{n}</span></button>
@@ -437,7 +458,7 @@ function Deck({ api, categories, people, player, toast }: {
           )}
         </div>
       </div>
-      <div className="pads">
+      <div className="pads" style={{ "--s": size / 100 } as CSSProperties}>
         {!people.length ? (
           <div className="empty">Henüz kimse yok. Ayarlar ekranından eski uygulamanın yedeğini yükleyebilirsiniz.</div>
         ) : !list.length ? (
