@@ -24,8 +24,10 @@ Bu sürüm Claude ile yapıldı.
   ya da Ayarlar > "Eski yedekten geri yükle" ile eski uygulamanın yedek ZIP'inden.
   Eski klasör değiştirilmez.
 
-- Canlı anons: ema-lightning ana motor, sorun olursa otomatik Piper. Metin 2 kez okunur.
-  Hangi motorun okuduğu ekranda görünür; Ayarlar > Canlı anons motoru'ndan seçilebilir.
+- Canlı anons: ema-lightning ana motor; sorun olursa otomatik Microsoft Edge sesi (Kadın: Emel,
+  Erkek: Ahmet, internet gerekir); internet de yoksa Windows'un Türkçe sesi. Metin 2 kez okunur.
+  Hangi motorun okuduğu ekranda görünür; motor ve Edge sesi Ayarlar > Canlı anons'tan seçilir
+  (her bilgisayarda ayrı, yedeğe girer).
 - Ağ: Sunucu bilgisayar anonsları çalar; istemciler gönderir. İstemcideki ses sunucuda yoksa
   kendiliğinden gönderilir. Eski sürüm (v3) istemciler de çalışır.
 - Her ses biçimi (WhatsApp .opus, .m4a, .webm, .amr, .wma...) MP3'e çevrilir ve ses seviyesi eşitlenir.
@@ -39,9 +41,11 @@ Derleme sırasında GitHub Actions indirir ve kurulum dosyasına koyar (depoda t
 | `src-tauri/resources/ffmpeg.exe` | Ses dönüştürme | GyanD/codexffmpeg 7.1 |
 | `src-tauri/resources/tts/fabe-tts/` | ema-lightning motoru (`tts/fabe_tts.py`, PyInstaller) | PyPI, sürümler `tts/requirements.txt` |
 | `src-tauri/resources/tts/models/` | ema-lightning modeli | Hugging Face canberkkkkkk/ema-lightning |
-| `src-tauri/resources/piper/` | Piper ve Türkçe ses (tr_TR-dfki-medium) | rhasspy/piper 2023.11.14-2 |
+| `src-tauri/resources/tts/fabe-edge/` | Edge TTS motoru (`tts/fabe_edge.py`, PyInstaller) | PyPI edge-tts, sürüm `tts/edge-requirements.txt` |
 
 Derleme, iki motoru da Windows'ta bir cümle okutarak dener; okuyamazsa sürüm yayınlanmaz.
+Edge bir gün "403" hatası vermeye başlarsa Microsoft hizmetini değiştirmiştir: `tts/edge-requirements.txt`
+içindeki edge-tts sürümünü yükseltip yeni sürüm yayınlamak yeter.
 Motorun kendi kayıtları veri klasöründeki `tts.log` dosyasındadır.
 
 ## Geliştirme

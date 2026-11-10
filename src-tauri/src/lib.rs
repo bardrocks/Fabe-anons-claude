@@ -72,7 +72,7 @@ fn apply_network(app: &Arc<App>, handle: &tauri::AppHandle) {
             // Old clients send only the text; this PC reads it.
             Some((text, _, rate)) => {
                 let s = Settings::load(&a.store);
-                (a.tts.speak(text, *rate, tts::Preference::parse(&s.tts_engine))?.file, true)
+                (a.tts.speak(text, *rate, tts::Preference::parse(&s.tts_engine), tts::Voice::parse(&s.tts_voice))?.file, true)
             }
             None => (inc.file, kind == Kind::Tts),
         };
@@ -143,8 +143,10 @@ struct Settings {
     volume: f32,
     tts_gain: f32,
     tts_rate: f32,
-    /// "otomatik" | "ema" | "piper"
+    /// "otomatik" | "ema" | "edge" (4.3 and older saved "piper", read as "edge")
     tts_engine: String,
+    /// Edge voice: "kadin" (Emel) | "erkek" (Ahmet). Per PC, and in backups with the other settings.
+    tts_voice: String,
     chime: bool,
     /// "yerel" | "sunucu" | "istemci"
     net_mode: String,
@@ -162,7 +164,15 @@ impl Settings {
             volume: s.setting_f32("volume", 0.8),
             tts_gain: s.setting_f32("tts_gain", 4.0),
             tts_rate: s.setting_f32("tts_rate", 1.0),
-            tts_engine: s.setting("tts_engine").ok().flatten().unwrap_or_else(|| "otomatik".into()),
+            tts_engine: match s.setting("tts_engine").ok().flatten().as_deref() {
+                Some("ema") => "ema".into(),
+                Some("edge" | "piper") => "edge".into(),
+                _ => "otomatik".into(),
+            },
+            tts_voice: match s.setting("tts_voice").ok().flatten().as_deref() {
+                Some("erkek") => "erkek".into(),
+                _ => "kadin".into(),
+            },
             chime: s.setting("chime").ok().flatten().map(|v| v != "0" && v != "false").unwrap_or(true),
             net_mode: s.setting("net_mode").ok().flatten().unwrap_or_else(|| "yerel".into()),
             net_server_ip: s.setting("net_server_ip").ok().flatten().unwrap_or_default(),
@@ -248,7 +258,7 @@ struct SpeakResult {
     note: Option<String>,
 }
 
-/// "SESLENDİR": reads the text twice, with ema-lightning or (if that fails) Piper.
+/// "SESLENDİR": reads the text twice, with ema-lightning, Edge or the Windows voice.
 #[tauri::command]
 async fn speak(text: String, app: tauri::State<'_, Arc<App>>, handle: tauri::AppHandle) -> Result<SpeakResult, String> {
     let app = app.inner().clone();
@@ -257,9 +267,9 @@ async fn speak(text: String, app: tauri::State<'_, Arc<App>>, handle: tauri::App
         return Err("Okunacak metni yazın".into());
     }
     let s = Settings::load(&app.store);
-    let pref = tts::Preference::parse(&s.tts_engine);
+    let (pref, voice) = (tts::Preference::parse(&s.tts_engine), tts::Voice::parse(&s.tts_voice));
     let (a, t) = (app.clone(), text.clone());
-    let spoken = tauri::async_runtime::spawn_blocking(move || a.tts.speak(&t, s.tts_rate, pref))
+    let spoken = tauri::async_runtime::spawn_blocking(move || a.tts.speak(&t, s.tts_rate, pref, voice))
         .await
         .map_err(err)?
         .map_err(|e| err(format!("{e:#}")))?;
@@ -650,11 +660,14 @@ fn set_setting(key: String, value: String, app: AppState, handle: tauri::AppHand
             value.parse::<f32>().map_err(err)?;
         }
         "tts_engine" => {
-            if !["otomatik", "ema", "piper"].contains(&value.as_str()) {
+            if !["otomatik", "ema", "edge"].contains(&value.as_str()) {
                 return Err("Geçersiz anons motoru".into());
             }
-            if value != "piper" {
-                app.tts.warm_up();
+            app.tts.warm_up(tts::Preference::parse(&value));
+        }
+        "tts_voice" => {
+            if !["kadin", "erkek"].contains(&value.as_str()) {
+                return Err("Geçersiz ses".into());
             }
         }
         "net_mode" => {
@@ -784,9 +797,7 @@ pub fn run() {
                 settings.chime,
             );
             let tts = tts::Tts::new(resource_dir, &paths::data_dir());
-            if settings.tts_engine != "piper" {
-                tts.warm_up(); // ema-lightning loads in the background
-            }
+            tts.warm_up(tts::Preference::parse(&settings.tts_engine)); // engines load in the background
             let app = Arc::new(App { store, player, server: Mutex::new(None), tts });
             apply_network(&app, &handle);
             start_break_scheduler(app.clone(), handle);

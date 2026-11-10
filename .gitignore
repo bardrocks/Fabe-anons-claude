@@ -24,4 +24,5 @@ dist-ssr
 *.sw?
 /src-tauri/resources/tts/
 /src-tauri/resources/piper/
+/build-edge/
 /build-tts/

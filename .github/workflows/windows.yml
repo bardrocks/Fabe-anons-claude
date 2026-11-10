@@ -87,21 +87,18 @@ jobs:
           python tts/dene.py src-tauri/resources/tts/fabe-tts/fabe-tts.exe src-tauri/resources/tts/models
           if ($LASTEXITCODE -ne 0) { throw "ema-lightning denemesi başarısız" }
 
-      # Yedek motor: Piper ve Türkçe ses.
-      - name: Yedek anons motorunu indir (Piper)
+      # Yedek motor: Microsoft Edge TTS (Emel / Ahmet), uygulamayla birlikte gelen ayrı bir program.
+      # Her bilgisayara ayrıca bir şey kurmak gerekmez; yalnızca internet ister.
+      - name: Yedek anons motorunu derle (Edge TTS)
         shell: pwsh
         run: |
-          Invoke-WebRequest "https://github.com/rhasspy/piper/releases/download/2023.11.14-2/piper_windows_amd64.zip" -OutFile piper.zip
-          Expand-Archive piper.zip -DestinationPath piper-tmp
-          New-Item -ItemType Directory -Force src-tauri/resources/piper | Out-Null
-          Copy-Item piper-tmp/piper/* src-tauri/resources/piper -Recurse -Force
-          $voice = "https://huggingface.co/rhasspy/piper-voices/resolve/v1.0.0/tr/tr_TR/dfki/medium/tr_TR-dfki-medium.onnx"
-          Invoke-WebRequest $voice -OutFile src-tauri/resources/piper/tr_TR-dfki-medium.onnx
-          Invoke-WebRequest "$voice.json" -OutFile src-tauri/resources/piper/tr_TR-dfki-medium.onnx.json
-          "Mehmet Bey depoya" | & src-tauri/resources/piper/piper.exe --model src-tauri/resources/piper/tr_TR-dfki-medium.onnx --output_file piper-deneme.wav
-          $size = (Get-Item piper-deneme.wav).Length
-          Write-Host "Piper deneme: $size bayt"
-          if ($size -lt 20000) { throw "Piper denemesi başarısız" }
+          python -m pip install -r tts/edge-requirements.txt
+          pyinstaller --noconfirm --onedir --console --name fabe-edge --distpath src-tauri/resources/tts --workpath build-edge/work --specpath build-edge --collect-data certifi --exclude-module tkinter tts/fabe_edge.py
+          if ($LASTEXITCODE -ne 0) { throw "PyInstaller başarısız" }
+          $mb = [math]::Round((Get-ChildItem src-tauri/resources/tts/fabe-edge -Recurse -File | Measure-Object Length -Sum).Sum / 1MB)
+          Write-Host "Edge motoru: $mb MB"
+          python tts/dene_edge.py src-tauri/resources/tts/fabe-edge/fabe-edge.exe
+          if ($LASTEXITCODE -ne 0) { throw "Edge denemesi başarısız" }
 
       - name: Kurulum dosyasını derle
         run: npx tauri build

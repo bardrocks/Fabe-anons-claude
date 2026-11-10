@@ -1,0 +1,4 @@
+# Yedek canlı anons motoru (Microsoft Edge TTS). Microsoft hizmetini değiştirince
+# edge-tts'in yeni sürümü gerekir: buradaki sürümü yükseltip uygulamayı yayınlamak yeter.
+edge-tts==7.3.1
+pyinstaller==6.22.3

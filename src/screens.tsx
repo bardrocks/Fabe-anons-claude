@@ -3,7 +3,7 @@ import { Fragment, useEffect, useMemo, useRef, useState, type ReactNode } from "
 import {
   BUTTON_COLORS, errorText, tr,
   type Backend, type BackupFile, type BreakEntry, type CallEntry, type Category, type NetMode,
-  type FoundServer, type Person, type Release, type RestoreReport, type ServerStatus, type Settings, type TtsEngineChoice,
+  type FoundServer, type Person, type Release, type RestoreReport, type ServerStatus, type Settings, type TtsEngineChoice, type TtsVoice,
   type TtsStatus, type UpdateProgress, ENGINE_LABEL, vivid,
 } from "./api";
 
@@ -589,9 +589,9 @@ export function UpdateSection({ api, settings, release, onRelease, toast }: {
   );
 }
 
-const EMA_STATE: Record<TtsStatus["ema"], string> = {
+const ENGINE_STATE: Record<TtsStatus["ema"], string> = {
   yok: "Bu kurulumda yok",
-  kapali: "Kapalı (ilk anonsta açılır)",
+  kapali: "Kapalı",
   yukleniyor: "Yükleniyor…",
   hazir: "Hazır",
   hata: "Açılamadı",
@@ -607,10 +607,15 @@ function TtsSection({ api, settings, toast, onChanged }: { api: Backend; setting
     return () => { alive = false; window.clearInterval(t); };
   }, [api]);
   const choose = (v: TtsEngineChoice) => api.setSetting("tts_engine", v).then(onChanged, (e) => toast(errorText(e), true));
+  const chooseVoice = (v: TtsVoice) => api.setSetting("tts_voice", v).then(onChanged, (e) => toast(errorText(e), true));
   const choices: [TtsEngineChoice, string, string][] = [
-    ["otomatik", "Otomatik", "ema-lightning, olmazsa Piper"],
-    ["ema", "ema-lightning", "Yalnızca ana motor"],
-    ["piper", "Piper", "Yalnızca yedek motor"],
+    ["otomatik", "Otomatik", "ema-lightning, olmazsa Edge"],
+    ["ema", "ema-lightning", "İnternet kullanmaz"],
+    ["edge", "Edge", "Microsoft sesi, internet gerekir"],
+  ];
+  const voices: [TtsVoice, string, string][] = [
+    ["kadin", "Kadın", "Emel"],
+    ["erkek", "Erkek", "Ahmet"],
   ];
   return (
     <div className="group">
@@ -620,14 +625,21 @@ function TtsSection({ api, settings, toast, onChanged }: { api: Backend; setting
           <button key={k} className={settings.ttsEngine === k ? "on" : ""} onClick={() => choose(k)}><b>{l}</b><small>{d}</small></button>
         ))}
       </div>
+      <h3>Edge sesi</h3>
+      <div className="segmented">
+        {voices.map(([k, l, d]) => (
+          <button key={k} className={settings.ttsVoice === k ? "on" : ""} onClick={() => chooseVoice(k)}><b>{l}</b><small>{d}</small></button>
+        ))}
+      </div>
       {status && (
         <dl className="engine-state">
-          <dt>ema-lightning</dt><dd>{EMA_STATE[status.ema]}{status.emaError ? ` (${status.emaError})` : ""}</dd>
-          <dt>Piper</dt><dd>{status.piper === "hazir" ? "Hazır" : "Bu kurulumda yok"}</dd>
+          <dt>ema-lightning</dt><dd>{ENGINE_STATE[status.ema]}{status.emaError ? ` (${status.emaError})` : ""}</dd>
+          <dt>Edge</dt><dd>{ENGINE_STATE[status.edge]}{status.edgeError ? ` (${status.edgeError})` : ""}</dd>
+          <dt>Windows sesi</dt><dd>{status.windows === "var" ? "İnternet yoksa son çare" : "Yok"}</dd>
           {status.lastEngine && <><dt>Son anons</dt><dd>{ENGINE_LABEL[status.lastEngine]}{status.lastNote ? ` · ${status.lastNote}` : ""}</dd></>}
         </dl>
       )}
-      <p>Canlı anonslar da 2 kez okunur. Sorun olursa ayrıntılar veri klasöründeki hata.log ve tts.log dosyalarına yazılır.</p>
+      <p>Canlı anonslar da 2 kez okunur. Edge motoru uygulamayla birlikte gelir, ayrıca bir şey kurmak gerekmez; yalnızca internet ister. İnternet yoksa Windows'un Türkçe sesi okur. Ses seçimi her bilgisayarda ayrı tutulur ve yedeğe girer. Sorun olursa ayrıntılar veri klasöründeki hata.log ve tts.log dosyalarına yazılır.</p>
     </div>
   );
 }
