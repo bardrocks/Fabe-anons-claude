@@ -19,24 +19,31 @@ export interface Category { id: number; name: string; position: number; }
 export interface CallEntry { id: number; at: string; title: string; kind: string; source: string; }
 export interface BreakEntry { id: number; time: string; soundFile: string; label: string; }
 export type NetMode = "yerel" | "sunucu" | "istemci";
-export type TtsEngineChoice = "otomatik" | "ema" | "piper";
-export type TtsEngine = "ema" | "piper";
+export type TtsEngineChoice = "otomatik" | "ema" | "edge";
+export type TtsVoice = "kadin" | "erkek";
+export type TtsEngine = "ema" | "edge" | "windows";
+export type EngineState = "yok" | "kapali" | "yukleniyor" | "hazir" | "hata";
 export interface TtsStatus {
-  ema: "yok" | "kapali" | "yukleniyor" | "hazir" | "hata";
+  ema: EngineState;
   emaError: string | null;
-  piper: "yok" | "hazir";
+  edge: EngineState;
+  edgeError: string | null;
+  /** Whether the Windows voice (last resort, no internet needed) can be tried. */
+  windows: "var" | "yok";
   lastEngine: TtsEngine | null;
   lastNote: string | null;
 }
 export type StatsPeriod = "tumu" | "bugun" | "hafta" | "ay";
 export interface Ranked { personId: number | null; name: string; count: number; }
 export interface SpeakResult { engine: TtsEngine; note: string | null; }
-export const ENGINE_LABEL: Record<TtsEngine, string> = { ema: "ema-lightning", piper: "Piper" };
+export const ENGINE_LABEL: Record<TtsEngine, string> = { ema: "ema-lightning", edge: "Edge", windows: "Windows sesi" };
+export const VOICE_LABEL: Record<TtsVoice, string> = { kadin: "Emel", erkek: "Ahmet" };
 export interface Settings {
   volume: number;
   ttsGain: number;
   ttsRate: number;
   ttsEngine: TtsEngineChoice;
+  ttsVoice: TtsVoice;
   chime: boolean;
   netMode: NetMode;
   netServerIp: string;
@@ -72,7 +79,7 @@ export interface Release { version: string; notes: string; url: string; sha256: 
 export interface UpdateProgress { step: string; done: number; total: number; }
 export interface PersonInput { name: string; category: string; color: string | null; soundFile: string | null; }
 export interface BreakInput { time: string; label: string; soundFile: string | null; }
-export type SettingKey = "volume" | "tts_gain" | "tts_rate" | "chime" | "net_mode" | "net_server_ip" | "net_port" | "pc_name" | "tts_engine" | "pad_size";
+export type SettingKey = "volume" | "tts_gain" | "tts_rate" | "chime" | "net_mode" | "net_server_ip" | "net_port" | "pc_name" | "tts_engine" | "tts_voice" | "pad_size";
 
 export interface Backend {
   snapshot(): Promise<Snapshot>;
@@ -100,7 +107,7 @@ export interface Backend {
   // Playback
   /** Returns a note to show (e.g. "Ayşe sunucuya gönderildi"), or "" when played here. */
   callPerson(id: number): Promise<string>;
-  /** Reads the text twice with ema-lightning, or Piper if that fails. */
+  /** Reads the text twice with ema-lightning, Edge (Emel/Ahmet) or the Windows voice, in that order. */
   speak(text: string): Promise<SpeakResult>;
   ttsStatus(): Promise<TtsStatus>;
   /** Most-called names in the last day / 7 days / 30 days. */
@@ -209,7 +216,7 @@ function mockBackend(): Backend {
   let categories: Category[] = ["Personeller", "Firmalar", "Depo"].map((name, i) => ({ id: i + 1, name, position: i + 1 }));
   let breaks: BreakEntry[] = [{ id: 1, time: "12:30", soundFile: "ogle-molasi.mp3", label: "Öğle molası" }, { id: 2, time: "19:12", soundFile: "mola1.mp3", label: "Mola" }];
   const history: CallEntry[] = [];
-  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", padSize: 100, version: "4.3.1" };
+  const settings: Settings = { volume: 0.8, ttsGain: 5.5, ttsRate: 0.8, ttsEngine: "otomatik", ttsVoice: "kadin", chime: true, netMode: "yerel", netServerIp: "", netPort: 55555, pcName: "KASA-1", padSize: 100, version: "4.4.0" };
   const playerCbs = new Set<(s: PlayerState) => void>();
   const dataCbs = new Set<() => void>();
   const changed = () => dataCbs.forEach((cb) => cb());
@@ -313,7 +320,7 @@ function mockBackend(): Backend {
       const q = tr.lower(query.trim());
       return history.filter((h) => !q || tr.lower(h.title).includes(q) || tr.lower(h.source).includes(q)).slice(0, 200);
     },
-    async ttsStatus() { return { ema: "hazir", emaError: null, piper: "hazir", lastEngine: "ema", lastNote: null }; },
+    async ttsStatus() { return { ema: "hazir", emaError: null, edge: "hazir", edgeError: null, windows: "var", lastEngine: "ema", lastNote: null }; },
     async stopAll() { queue = []; window.clearInterval(timer); emit(idle); },
     async setSetting(key, value) {
       if (key === "volume") settings.volume = +value;
@@ -326,6 +333,7 @@ function mockBackend(): Backend {
       if (key === "pc_name") settings.pcName = value;
       if (key === "pad_size") settings.padSize = +value;
       if (key === "tts_engine") settings.ttsEngine = value as TtsEngineChoice;
+      if (key === "tts_voice") settings.ttsVoice = value as TtsVoice;
     },
     async createBackup() { return "C:\\Users\\kasa\\Desktop\\FABE_Anons_Yedek.zip"; },
     async restoreBackup() { return { kind: "eski", people: 37, sounds: 36, breaks: 1, missingSounds: ["ALUCH"], safetyBackup: "...\\yedekler\\FABE_Anons_Yedek_4.0.0_geri-yukleme-oncesi.zip" }; },

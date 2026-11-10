@@ -1,5 +1,5 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
-import { backendReady, ENGINE_LABEL, errorText, tr, vivid, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Ranked, type Snapshot, type StatsPeriod, type TtsStatus } from "./api";
+import { backendReady, ENGINE_LABEL, VOICE_LABEL, errorText, tr, vivid, type Backend, type Category, type NetMode, type Person, type PlayerState, type Release, type Ranked, type Snapshot, type StatsPeriod, type TtsStatus } from "./api";
 import { BreaksScreen, HistoryScreen, PeopleScreen, SettingsScreen } from "./screens";
 
 type Page = "anons" | "mola" | "gecmis" | "kisiler" | "ayarlar";
@@ -222,23 +222,28 @@ function VuMeter({ level }: { level: number }) {
 }
 
 /** Which engine will read the next announcement, and whether it is ready. */
-function EngineBadge({ status, choice }: { status: TtsStatus | null; choice: Snapshot["settings"]["ttsEngine"] }) {
+function EngineBadge({ status, settings }: { status: TtsStatus | null; settings: Snapshot["settings"] }) {
   if (!status) return <div className="engine"><span className="e1"><span className="dot off" />Motor</span><span className="e2">Kontrol ediliyor</span></div>;
-  const emaReady = status.ema === "hazir";
-  const piperReady = status.piper === "hazir";
+  const choice = settings.ttsEngine;
+  const edgeName = `Edge (${VOICE_LABEL[settings.ttsVoice]})`;
+  const edgeUp = status.edge === "hazir" || status.edge === "yukleniyor" || status.edge === "kapali";
+  const backup = edgeUp ? edgeName : status.windows === "var" ? "Windows sesi" : "";
   let name: string, dot: string, line: string;
-  if (choice === "piper" || (!emaReady && status.ema !== "yukleniyor")) {
-    name = "Piper"; dot = piperReady ? "" : "off";
-    line = choice === "piper" ? "Ayarlardan seçildi" : piperReady ? "Yedek motor devrede" : "Anons motoru bulunamadı";
+  if (choice === "edge" || (choice === "otomatik" && status.ema !== "hazir" && status.ema !== "yukleniyor")) {
+    // Edge reads (it needs internet); the Windows voice is the last resort.
+    name = edgeUp ? edgeName : status.windows === "var" ? "Windows sesi" : "Motor yok";
+    dot = status.edge === "hazir" ? "" : status.edge === "yukleniyor" ? "wait" : edgeUp || status.windows === "var" ? "" : "off";
+    line = choice === "edge" ? "Ayarlardan seçildi · internet gerekir" : edgeUp ? "Yedek motor devrede" : status.windows === "var" ? "İnternetsiz yedek" : "Anons motoru bulunamadı";
   } else if (status.ema === "yukleniyor") {
     name = "ema-lightning"; dot = "wait";
-    line = piperReady ? "Yükleniyor · bu arada Piper okur" : "Yükleniyor";
+    line = backup && choice === "otomatik" ? `Yükleniyor · bu arada ${backup} okur` : "Yükleniyor";
   } else {
-    name = "ema-lightning"; dot = "";
-    line = piperReady ? "Hazır · yedek: Piper" : "Hazır";
+    name = "ema-lightning"; dot = status.ema === "hazir" ? "" : "off";
+    const b = choice === "otomatik" ? backup : status.windows === "var" ? "Windows sesi" : "";
+    line = status.ema === "hazir" ? (b ? `Hazır · yedek: ${b}` : "Hazır") : b ? `Açılamadı · ${b} okur` : "Açılamadı";
   }
   const last = status.lastEngine ? `Son anons: ${ENGINE_LABEL[status.lastEngine]}` : "";
-  const title = [status.emaError && `ema-lightning: ${status.emaError}`, status.lastNote, last].filter(Boolean).join("\n");
+  const title = [status.emaError && `ema-lightning: ${status.emaError}`, status.edgeError && `Edge: ${status.edgeError}`, status.lastNote, last].filter(Boolean).join("\n");
   return (
     <div className="engine" title={title || undefined}>
       <span className="e1"><span className={`dot ${dot}`} />{name}</span>
@@ -271,7 +276,7 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
     setBusy(true);
     try {
       const r = await api.speak(t);
-      if (r.note) toast(r.note, r.engine === "piper" && !r.note.startsWith("Sunucuya"));
+      if (r.note) toast(r.note, r.engine !== "ema" && !r.note.startsWith("Sunucuya"));
       api.ttsStatus().then(setStatus, () => {});
     } catch (e) {
       toast(errorText(e), true);
@@ -314,7 +319,7 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
             onChange={(e) => { setVol(+e.target.value); api.setSetting("volume", String(+e.target.value / 100)); }} />
           <b>{vol}</b>
         </label>
-        <EngineBadge status={status} choice={data.settings.ttsEngine} />
+        <EngineBadge status={status} settings={data.settings} />
       </div>
     </section>
   );
