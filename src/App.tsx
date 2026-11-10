@@ -233,7 +233,7 @@ function EngineBadge({ status, settings }: { status: TtsStatus | null; settings:
     // Edge reads (it needs internet); the Windows voice is the last resort.
     name = edgeUp ? edgeName : status.windows === "var" ? "Windows sesi" : "Motor yok";
     dot = status.edge === "hazir" ? "" : status.edge === "yukleniyor" ? "wait" : edgeUp || status.windows === "var" ? "" : "off";
-    line = choice === "edge" ? "Ayarlardan seçildi · internet gerekir" : edgeUp ? "Yedek motor devrede" : status.windows === "var" ? "İnternetsiz yedek" : "Anons motoru bulunamadı";
+    line = choice === "edge" ? "Seçildi · internet gerekir" : edgeUp ? "Yedek motor devrede" : status.windows === "var" ? "İnternetsiz yedek" : "Anons motoru bulunamadı";
   } else if (status.ema === "yukleniyor") {
     name = "ema-lightning"; dot = "wait";
     line = backup && choice === "otomatik" ? `Yükleniyor · bu arada ${backup} okur` : "Yükleniyor";
@@ -248,6 +248,33 @@ function EngineBadge({ status, settings }: { status: TtsStatus | null; settings:
     <div className="engine" title={title || undefined}>
       <span className="e1"><span className={`dot ${dot}`} />{name}</span>
       <span className="e2">{line}</span>
+    </div>
+  );
+}
+
+/** Quick engine and Edge voice choice on the main screen (same settings as Ayarlar > Canlı anons). */
+function EnginePick({ api, settings, toast, onSaved }: { api: Backend; settings: Snapshot["settings"]; toast: Toast; onSaved: () => void }) {
+  const set = (key: "tts_engine" | "tts_voice", v: string) => api.setSetting(key, v).then(onSaved, (e) => toast(errorText(e), true));
+  const engines: [Snapshot["settings"]["ttsEngine"], string, string][] = [
+    ["otomatik", "Oto", "ema-lightning, olmazsa Edge"],
+    ["ema", "EMA", "Yalnızca ema-lightning (internet kullanmaz)"],
+    ["edge", "Edge", "Microsoft Edge sesi (internet gerekir)"],
+  ];
+  const voiceOff = settings.ttsEngine === "ema";
+  return (
+    <div className="engine-pick">
+      <div className="pills" role="group" aria-label="Anons motoru">
+        {engines.map(([k, l, t]) => (
+          <button key={k} type="button" title={t} className={settings.ttsEngine === k ? "on" : ""} aria-pressed={settings.ttsEngine === k}
+            onClick={() => settings.ttsEngine !== k && set("tts_engine", k)}>{l}</button>
+        ))}
+      </div>
+      <div className="pills" role="group" aria-label="Edge sesi" title={voiceOff ? "Kadın/Erkek seçimi Edge sesi içindir" : "Edge sesi"}>
+        {(["kadin", "erkek"] as const).map((k) => (
+          <button key={k} type="button" disabled={voiceOff} className={settings.ttsVoice === k ? "on" : ""} aria-pressed={settings.ttsVoice === k}
+            onClick={() => settings.ttsVoice !== k && set("tts_voice", k)}>{k === "kadin" ? "Kadın" : "Erkek"}</button>
+        ))}
+      </div>
     </div>
   );
 }
@@ -319,6 +346,7 @@ function Mic({ api, data, toast, onSaved }: { api: Backend; data: Snapshot; toas
             onChange={(e) => { setVol(+e.target.value); api.setSetting("volume", String(+e.target.value / 100)); }} />
           <b>{vol}</b>
         </label>
+        <EnginePick api={api} settings={data.settings} toast={toast} onSaved={onSaved} />
         <EngineBadge status={status} settings={data.settings} />
       </div>
     </section>

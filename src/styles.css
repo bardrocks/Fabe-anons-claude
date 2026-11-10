@@ -84,7 +84,13 @@ button { cursor: pointer; }
 .ctl { display: flex; align-items: center; gap: 10px; font-family: var(--f-mono); font-size: 11px; color: var(--dim); letter-spacing: .08em; text-transform: uppercase; }
 .ctl input[type=range] { width: 150px; accent-color: var(--led); }
 .ctl b { color: var(--led); font-weight: 700; min-width: 44px; }
-.engine { margin-left: auto; background: var(--groove); border: 1px solid var(--edge); border-radius: 10px; padding: 6px 12px; display: flex; flex-direction: column; }
+.engine-pick { margin-left: auto; display: flex; flex-direction: column; gap: 4px; }
+.pills { display: flex; background: var(--groove); border: 1px solid var(--edge); border-radius: 8px; padding: 2px; }
+.pills button { flex: 1; font-family: var(--f-mono); font-size: 10.5px; letter-spacing: .06em; text-transform: uppercase; padding: 3px 9px; border: 0; border-radius: 6px; background: transparent; color: var(--dim); cursor: pointer; }
+.pills button.on { background: var(--led); color: #1a1205; font-weight: 700; }
+.pills button:disabled { opacity: .35; cursor: default; }
+.pills button:not(.on):not(:disabled):hover { color: var(--text); }
+.engine { background: var(--groove); border: 1px solid var(--edge); border-radius: 10px; padding: 6px 12px; display: flex; flex-direction: column; }
 .engine .e1 { font-weight: 600; font-size: 12.5px; display: flex; align-items: center; gap: 7px; }
 .engine .e2 { font-size: 10.5px; color: var(--dim); }
 .engine .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--led); box-shadow: 0 0 8px var(--led); }
@@ -193,7 +199,7 @@ button { cursor: pointer; }
   .master, .mic, .screen { grid-column: 1; }
 }
 @media (max-width: 820px) { .master { grid-template-columns: minmax(0,1fr) auto; } .vu { display: none; } }
-@media (max-width: 700px) { .mic { grid-template-columns: minmax(0,1fr); } .mic-ico { display: none; } .mic-opts { grid-column: 1; } .engine { margin-left: 0; } }
+@media (max-width: 700px) { .mic { grid-template-columns: minmax(0,1fr); } .mic-ico { display: none; } .mic-opts { grid-column: 1; } .engine-pick { margin-left: 0; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }
 
 /* Management screens */
